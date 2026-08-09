@@ -1,0 +1,34 @@
+{
+  "name": "pdf-copilot",
+  "version": "0.1.0",
+  "description": "",
+  "main": "index.js",
+ "scripts": {
+  "dev": "vite",
+  "build": "tsc --noEmit && vite build",
+  "typecheck": "tsc --noEmit"
+  },
+ "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "dependencies": {
+    "pdf-lib": "^1.17.1",
+    "pdfjs-dist": "^6.2.108",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "zustand": "^5.0.14"
+  },
+  "devDependencies": {
+    "@crxjs/vite-plugin": "^2.7.1",
+    "@tailwindcss/vite": "^4.3.3",
+    "@types/chrome": "^0.2.5",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
+    "@vitejs/plugin-react": "^6.0.5",
+    "tailwindcss": "^4.3.3",
+    "typescript": "^7.0.2",
+    "vite": "^8.2.1",
+    "vite-plugin-static-copy": "^4.1.1"
+  }
+}
