@@ -1,16 +1,19 @@
 # PDF Copilot — Build Plan
 
 ## 1. What this is, in one sentence
+
 A browser extension that lets you edit/sign any PDF in-browser, then uses AI
 to tell you — field by field — what to fill in, what to skip, and why, based
 on your own stated situation. No server, no database, no accounts.
 
 ## 2. The problem this solves (the actual use case)
+
 Today, filling a bureaucratic form (example: Israeli Pitsuim / severance
 pay forms) looks like this:
+
 1. Upload the PDF to an AI chat, ask "what do I fill in and how"
 2. Get a text answer describing which fields apply to you
-3. Manually go to a *separate* tool (e.g. ilovepdf) to actually type into
+3. Manually go to a _separate_ tool (e.g. ilovepdf) to actually type into
    the PDF and figure out where each field described maps to on the page
 
 This extension collapses steps 1–3 into one flow: the AI's answer and the
@@ -19,14 +22,15 @@ exact coordinates on the page instead of prose you have to translate
 yourself.
 
 ## 3. Why not just re-upload the whole PDF to the AI every time?
+
 You can — Claude can read a whole PDF directly. But two things make that
-the wrong architecture *for this extension specifically*:
+the wrong architecture _for this extension specifically_:
 
 - **The AI's answer alone can't fill anything.** Even if Claude tells you
   "fill in your name here," it has no way to reach into the file and place
   text there — that answer is just a chat message. Something still has to
   map "fill in your name" to an exact x/y position on the page, and that
-  something has to be *our* client-side code, not the AI. So we need a
+  something has to be _our_ client-side code, not the AI. So we need a
   local text+position extraction step regardless of which option we pick.
 - **Token cost.** Sending the whole document (or worse, page images) every
   time you ask something is expensive and slow compared to sending a short
@@ -40,21 +44,21 @@ labeled list to the AI, not the raw document.
 
 ## 4. Architecture decisions and the reasoning behind each
 
-| Decision | Reasoning |
-|---|---|
-| **No backend, no database** | Nothing persists across sessions except the API key. Simpler, faster to build, and a legitimately strong privacy story: "no document ever leaves your browser except as text sent directly to Anthropic, and only when you use the copilot." |
-| **BYOK (Bring Your Own Key)** | User pastes their own Anthropic API key, stored in `chrome.storage.local`. The extension calls `api.anthropic.com` directly from the client. Zero hosting cost/risk to you, zero backend to build in 2 weeks, and it's a normal, accepted pattern for AI browser extensions. |
-| **No auth system** | There's nothing to authenticate *to* — no accounts, no server. The API key itself *is* the authentication, handled entirely by Anthropic when the request lands. |
-| **pdf.js for viewing/reading** | Renders any PDF (including scanned/image-only via its layers) and gives you each text chunk's page + x/y coordinates — required for both the editor and the blank-detection step. |
-| **pdf-lib for editing/export** | Lets you draw text, place a signature image, and flatten/re-save as a real downloadable PDF — all client-side, no upload required for editing itself. |
-| **Native AcroForm rendering left untouched** | True AcroForms already render as real interactive fields via pdf.js's AnnotationLayer. We don't rebuild a fill mechanism for these — we only add an explanation layer (tooltip/modal) on top. Building a duplicate fill system here would be wasted effort for zero added value. |
-| **Two separate blank-detection systems** | (1) Flat/scanned PDFs — no real form fields, blanks are underscores/lines/boxes detected via text + geometry heuristics. (2) AcroForms — fields already exist structurally, just need label resolution. These are different problems solved by mostly-shared code (the label resolver), kept as separate modules so cutting scope on one doesn't break the other. |
+| Decision                                     | Reasoning                                                                                                                                                                                                                                                                                                                                                         |
+| -------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **No backend, no database**                  | Nothing persists across sessions except the API key. Simpler, faster to build, and a legitimately strong privacy story: "no document ever leaves your browser except as text sent directly to Anthropic, and only when you use the copilot."                                                                                                                      |
+| **BYOK (Bring Your Own Key)**                | User pastes their own Anthropic API key, stored in `chrome.storage.local`. The extension calls `api.anthropic.com` directly from the client. Zero hosting cost/risk to you, zero backend to build in 2 weeks, and it's a normal, accepted pattern for AI browser extensions.                                                                                      |
+| **No auth system**                           | There's nothing to authenticate _to_ — no accounts, no server. The API key itself _is_ the authentication, handled entirely by Anthropic when the request lands.                                                                                                                                                                                                  |
+| **pdf.js for viewing/reading**               | Renders any PDF (including scanned/image-only via its layers) and gives you each text chunk's page + x/y coordinates — required for both the editor and the blank-detection step.                                                                                                                                                                                 |
+| **pdf-lib for editing/export**               | Lets you draw text, place a signature image, and flatten/re-save as a real downloadable PDF — all client-side, no upload required for editing itself.                                                                                                                                                                                                             |
+| **Native AcroForm rendering left untouched** | True AcroForms already render as real interactive fields via pdf.js's AnnotationLayer. We don't rebuild a fill mechanism for these — we only add an explanation layer (tooltip/modal) on top. Building a duplicate fill system here would be wasted effort for zero added value.                                                                                  |
+| **Two separate blank-detection systems**     | (1) Flat/scanned PDFs — no real form fields, blanks are underscores/lines/boxes detected via text + geometry heuristics. (2) AcroForms — fields already exist structurally, just need label resolution. These are different problems solved by mostly-shared code (the label resolver), kept as separate modules so cutting scope on one doesn't break the other. |
 
 ## 5. How the AI copilot actually works, step by step
 
 1. **Context intake (first thing the user sees):**
-   - API key field (only shown if not already stored) — short note: *"stored locally on your device only, used to call Anthropic directly, never sent to us"*
-   - Two short questions: *"What is this document?"* and *"What do you need to do?"* (free text)
+   - API key field (only shown if not already stored) — short note: _"stored locally on your device only, used to call Anthropic directly, never sent to us"_
+   - Two short questions: _"What is this document?"_ and _"What do you need to do?"_ (free text)
 2. **Upload PDF** → parsed entirely in-memory, nothing written to disk
 3. **Extraction:**
    - pdf.js pulls all text chunks with page + x/y coordinates
@@ -64,7 +68,7 @@ labeled list to the AI, not the raw document.
 4. **Blank detection (flat PDFs):**
    - Regex for underscore runs, dotted lines, empty boxes near labels
    - Label = text immediately preceding the blank on the same line
-   - **RTL-aware for Hebrew:** "preceding" means to the *right* of the blank,
+   - **RTL-aware for Hebrew:** "preceding" means to the _right_ of the blank,
      not the left — this needs explicit handling, it's an easy bug to get
      backwards and not notice until you test with a real Hebrew form
 5. **AI call** — send a compact structured payload, not the raw file:
@@ -102,15 +106,15 @@ handled deliberately:
 
 - **Text extraction is language-agnostic.** pdf.js pulls whatever text is
   in the PDF as-is — no special handling needed to read Hebrew, English,
-  or mixed-language documents. *(Confirmed on the Harel fixture: Hebrew,
+  or mixed-language documents. _(Confirmed on the Harel fixture: Hebrew,
   including vertical margin text, extracts correctly. See §12 for the
-  Latin-run caveat.)*
+  Latin-run caveat.)_
 - **Claude reads Hebrew natively and can respond in whatever language the
   user is using.** Send Hebrew labels + English user context, ask for the
   explanation in English — this is a normal multilingual call.
 - **Explanation language vs. value language must be kept separate in the
-  prompt.** The AI's *explanation* of a field can be in the user's
-  language (English), but the *value* it suggests writing into the form
+  prompt.** The AI's _explanation_ of a field can be in the user's
+  language (English), but the _value_ it suggests writing into the form
   usually needs to stay in the document's language/script (Hebrew) — e.g.
   a name or address should be written in Hebrew, since that's what the
   form/authority expects. Prompt for this explicitly: "explanation in
@@ -122,7 +126,7 @@ handled deliberately:
   pack, or scanned Hebrew forms come out as garbage.
 - **RTL is a UI/extraction concern, not an AI concern.** The blank-label
   resolver's "text immediately preceding the blank" logic needs to look
-  right-to-left for Hebrew (i.e. the label is to the *right* of the blank,
+  right-to-left for Hebrew (i.e. the label is to the _right_ of the blank,
   not the left) — independent of how the AI call itself is made.
 
 ## 7. Multi-provider AI support (Anthropic + OpenAI)
@@ -139,6 +143,7 @@ choice" line, not something that strengthens the core differentiator
 (the blank-detection + editor pipeline).
 
 **How to structure it:**
+
 - One internal function, e.g. `getFieldClassifications(payload)`, that
   branches internally on the selected provider — never scatter
   `if (provider === 'openai')` checks through UI code
@@ -155,11 +160,11 @@ don't let it surface as a surprise on the final build day.
 
 ## 8. Storage & security model (know this cold for demo day)
 
-| Data | Where | Persists? |
-|---|---|---|
-| PDF content, annotations, AI classifications | In-memory (JS state) | No — gone on tab close/refresh |
-| API key | `chrome.storage.local` | Yes (deliberately, so you don't re-paste it every time) |
-| Context form answers | In-memory | No |
+| Data                                         | Where                  | Persists?                                               |
+| -------------------------------------------- | ---------------------- | ------------------------------------------------------- |
+| PDF content, annotations, AI classifications | In-memory (JS state)   | No — gone on tab close/refresh                          |
+| API key                                      | `chrome.storage.local` | Yes (deliberately, so you don't re-paste it every time) |
+| Context form answers                         | In-memory              | No                                                      |
 
 - **No database, anywhere.** `chrome.storage.local` is sandboxed to the
   extension by Chrome, not readable by other extensions or sites, and not
@@ -177,6 +182,7 @@ don't let it surface as a surprise on the final build day.
   anyone with access to that Chrome profile could read the stored key.
 
 ## 9. Repo layout
+
 ```
 extension/          MV3 extension — React + TypeScript + Vite + Tailwind
   src/
@@ -186,6 +192,7 @@ extension/          MV3 extension — React + TypeScript + Vite + Tailwind
     context-form/    first-run API key + "what is this / what do you need"
     state/           in-memory session store (Zustand)
 ```
+
 No `server/` directory — this build has no backend.
 
 **As actually built so far** — `src/` sits at the repo root (no `extension/`
@@ -202,6 +209,7 @@ src/
 ## 10. Build order
 
 ### Phase 1 — Editor (Week 1)
+
 1. **[DONE]** Extension shell (MV3) + pdf.js viewer rendering any PDF
    - [x] MV3 shell, Vite build, worker wiring (`pdf-setup.ts`)
    - [x] Drag-drop / file-picker intake, in-memory only
@@ -213,9 +221,13 @@ src/
    correctly via bidi-js + an LTR-forced fontkit. See §14.3; the finding there
    (fontkit silently reverses digits) is load-bearing for the text tool.
 
-3. Coordinate model — annotations stored in **PDF points**, not screen pixels.
-   Must be settled before step 4, retrofitting means rewriting everything the
-   text tool touches. See §14.4.
+3. **[DONE]** Coordinate model — annotations stored in **PDF points**.
+   - [x] `src/state/annotations.ts` — types only, no imports (safe for the
+         background worker). Text/signature/symbol union, geometry in points.
+   - [x] `src/viewer/coordinates.ts` — the only place the two systems meet.
+         `cssPointToPdf`, `pdfRectToCss`, `fontSizeToCss`.
+   - [x] Verified against the A4 fixture at several zoom levels: a rect at
+         y=700 h=20 lands at top = 121.89 × scale, exact every time.
 
 4. Text box tool: click anywhere, type, edit, delete, drag/resize
 5. Signature tool: draw-to-sign, place/resize
@@ -227,10 +239,11 @@ src/
    has issues, it must not break
 
 ### Phase 2 — AI Copilot for flat/scanned PDFs (Week 2, days 8–13)
+
 6. Inline context form (provider dropdown + API key + two questions) on first run, provider+key persisted after
 7. pdf.js text + position extraction
    - Note: `PdfTextLayer` already proves the extraction path works. That
-     component *positions* runs; this step *reassembles* them. Separate file,
+     component _positions_ runs; this step _reassembles_ them. Separate file,
      e.g. `extract-text.ts` — do not entangle it with the layer.
 8. Blank-detection heuristics — test against a real demo document immediately, don't wait
 9. Direct client → Claude API call, structured JSON response
@@ -239,6 +252,7 @@ src/
 12. Full rehearsal on the real demo document, repeatedly
 
 ### Phase 3 — AcroForm explanation layer (only if time remains)
+
 13. AcroForm field detection + label resolution (reuse Phase 2's resolver)
 14. Same classification call, reused — output feeds a tooltip/modal
 15. Hover/click → guidance modal; native field stays native, no custom fill logic
@@ -246,9 +260,10 @@ src/
 ## 11. Pre-demo checklist
 
 **Editor**
+
 - [ ] Opens text-based and multi-page PDFs without crashing
-      *(multi-page text-based: confirmed on the 3-page Harel form. Single-page
-      and large 50+ page files: untested.)*
+      _(multi-page text-based: confirmed on the 3-page Harel form. Single-page
+      and large 50+ page files: untested.)_
 - [ ] Scanned/image-only PDF degrades cleanly: page renders, empty text layer
       doesn't throw, copilot states plainly that it can't read this page
 - [ ] Text box placement stays accurate across different zoom levels
@@ -258,6 +273,7 @@ src/
 - [ ] "Unsaved changes" warning fires on tab close
 
 **Copilot**
+
 - [ ] API key flow: first-run prompt, persists correctly, doesn't re-ask every session
 - [ ] Graceful, visible error if the key is missing or invalid — never a silent hang
 - [ ] Blank detection catches the real blanks on the actual demo PDF (no false positives/negatives on that specific file)
@@ -271,10 +287,12 @@ src/
       how to handle it before demo day rather than being surprised by it.**
 
 **AcroForm (if reached)**
+
 - [ ] Native field rendering still works normally
 - [ ] Modal/tooltip appears reliably without blocking the field itself
 
 **Overall**
+
 - [ ] Full demo script rehearsed start-to-finish 3–5+ times on the exact file being presented
 - [ ] Fallback plan if AI/network fails live: demo the editor alone, narrate the copilot via screenshots/recording
 - [ ] Tested on a clean Chrome profile to catch anything working only due to local dev state
@@ -287,6 +305,7 @@ Things learned building the viewer against the real demo document. Recorded
 so they don't get rediscovered as "bugs" later.
 
 ### 12.1 Latin runs extract garbled — file defect, not ours ⚠
+
 Extracted text on some pages returns `httSs://www.harHl-grouS.co.il` and
 `uQsubscribH1@harHl-iQs.co.il`. The pattern is a constant shift of 29
 character codes (`p→S`, `e→H`, `n→Q`): a subset-embedded font with a broken
@@ -300,6 +319,7 @@ or missing `ToUnicode` table.
 
 **Implication for the demo:** the pre-demo checklist promises "no garbled
 text anywhere in the UI." Options, pick one deliberately:
+
 1. Detect and disclose — flag low-confidence extraction to the user
    ("text extraction looks unreliable on this page") rather than silently
    feeding garbage to the model. Cheap heuristic: ratio of uppercase letters
@@ -316,11 +336,13 @@ text anywhere in the UI." Options, pick one deliberately:
 Recommendation: (1) for correctness, and check whether (3) makes it moot.
 
 ### 12.2 Text runs are fragmented by design
+
 A PDF has no concept of a line or paragraph — only positioned glyph runs. A
 new run starts on any change of font, weight, size, colour, or a horizontal
 position jump. One visual line is routinely 3+ items.
 
 Directly affects two later steps:
+
 - **Search** will miss terms straddling a run boundary. Standard fix:
   concatenate all items into one string, search that, map matches back to
   span index + offset.
@@ -330,8 +352,9 @@ Directly affects two later steps:
   is meaningful. This is the reassembly step noted in Phase 2 step 7.
 
 ### 12.3 Scale-factor bugs will recur in the editor
+
 The text layer's spans are positioned in **CSS pixel space** using a viewport
-built at plain `scale` — *not* `scale * dpr` like the canvas. Mixing the two
+built at plain `scale` — _not_ `scale * dpr` like the canvas. Mixing the two
 puts everything at double offset on a retina display.
 
 The annotation overlay in Phase 1 step 2 has exactly the same problem, and
@@ -345,14 +368,16 @@ fixed-size spans that only look right at one zoom level. Import the real
 stylesheet.
 
 ### 12.4 Alignment is approximate and that's final
+
 pdf.js measures each run and applies a horizontal `scaleX` to stretch the
 substitute system font to the width the embedded font produced. Small
 residual drift is inherent — not a bug, not improvable, every browser PDF
 viewer does this. Do not spend time on it.
 
 ### 12.5 Ownership rules established
+
 - `page.cleanup()` lives in **`PdfPage` only**. Both components call
-  `doc.getPage()` and get the *same cached proxy*; a second cleanup call can
+  `doc.getPage()` and get the _same cached proxy_; a second cleanup call can
   free fonts out from under a live render.
 - If text-layer failures ever appear in the console only on fast page
   changes, the suspect is `PdfPage`'s `cleanup()` racing the text stream.
@@ -362,8 +387,10 @@ viewer does this. Do not spend time on it.
   wrong — that store is shared with the DOM-less background worker.
 
 ### 12.6 Cancellation pattern (reuse this)
+
 Every long-running pdf.js operation follows the same three beats, because
 React re-triggers effects faster than these complete:
+
 1. `cancel()` — a request, not an instant stop. Returns immediately.
 2. `await …promise.catch(() => {})` — wait for the real teardown.
 3. Null the refs.
@@ -401,6 +428,7 @@ the text layer.
 ## 14. Session handoff — start here
 
 ### 14.1 State of play
+
 Phase 1 step 1 is complete. The viewer renders, paginates, zooms 50–300%, and
 supports text selection and copy. Two files were built and tested against the
 real demo document (`test_pdf.pdf`, a 3-page Hebrew Harel severance form):
@@ -419,8 +447,9 @@ Both typecheck clean. pdf.js is v6-era (`page.render()` requires `canvas`,
 `TextLayer` is exported from the core entry, not the viewer bundle).
 
 ### 14.2 Decision: page-at-a-time, no continuous scroll
+
 Scroll doesn't affect copilot correctness — markers anchor to page +
-coordinates either way. It affects *discoverability*: a user on page 1 can't
+coordinates either way. It affects _discoverability_: a user on page 1 can't
 see that page 3 has eight more fields.
 
 **Consequence, now mandatory rather than optional:** the copilot panel must be
@@ -431,18 +460,19 @@ becomes a scannable list rather than something the presenter hunts for.
 Folded into Phase 2 step 11.
 
 ### 14.3 RESOLVED: Hebrew + English export works — spike complete
+
 Ran the spike against `test_pdf.pdf`. **Both scripts export correctly.** The
 solution is two lines, but neither alone is sufficient, and the failure mode
 of getting it wrong is silent.
 
 **The finding.** `fontkit` (which pdf-lib uses internally for custom fonts)
-*already* reverses Hebrew glyph order — but naively, reversing the whole
+_already_ reverses Hebrew glyph order — but naively, reversing the whole
 string rather than running the bidi algorithm. Consequences:
 
-| input | fontkit alone | correct |
-|---|---|---|
-| `שם משפחה` | ✅ right by accident | ✅ |
-| `רחוב הרצל 45` | ❌ `54` | `45` |
+| input                       | fontkit alone           | correct   |
+| --------------------------- | ----------------------- | --------- |
+| `שם משפחה`                  | ✅ right by accident    | ✅        |
+| `רחוב הרצל 45`              | ❌ `54`                 | `45`      |
 | `חשבון 935921908 בבנק HSBC` | ❌ `809129539` / `CBSH` | unchanged |
 
 **Pure Hebrew looks perfect, so this passes casual inspection.** Digits and
@@ -452,6 +482,7 @@ never scrutinises the numbers. This is the single most dangerous bug the
 project could have shipped, and it is invisible without deliberate testing.
 
 **The fix — both halves required:**
+
 1. `bidi-js` `getReorderedString()` for correct logical→visual ordering.
    Handles digits, Latin runs, and bracket mirroring. Latin-only strings pass
    through untouched, so English needs no special case.
@@ -470,7 +501,7 @@ const bidi = bidiFactory();
 
 /** Logical order (as typed) -> visual order (as drawn). */
 const toVisualOrder = (text) =>
-    bidi.getReorderedString(text, bidi.getEmbeddingLevels(text));
+  bidi.getReorderedString(text, bidi.getEmbeddingLevels(text));
 
 /**
  * DO NOT REMOVE. pdf-lib delegates glyph layout to fontkit, which reverses
@@ -480,13 +511,13 @@ const toVisualOrder = (text) =>
  * silently export backwards and nobody notices.
  */
 const ltrFontkit = {
-    create(bytes, postscriptName) {
-        const font = fontkit.create(bytes, postscriptName);
-        const originalLayout = font.layout.bind(font);
-        font.layout = (str, features, script, language, direction) =>
-            originalLayout(str, features, script, language, direction || "ltr");
-        return font;
-    },
+  create(bytes, postscriptName) {
+    const font = fontkit.create(bytes, postscriptName);
+    const originalLayout = font.layout.bind(font);
+    font.layout = (str, features, script, language, direction) =>
+      originalLayout(str, features, script, language, direction || "ltr");
+    return font;
+  },
 };
 
 // usage
@@ -507,7 +538,7 @@ during extraction and recovers logical order from visual glyphs. No
 `/ActualText` needed.
 
 **Font:** static `NotoSansHebrew-Regular.ttf` from the notofonts GitHub
-release — *not* Google Fonts, which serves a variable font that fontkit
+release — _not_ Google Fonts, which serves a variable font that fontkit
 subsetting handles poorly:
 
 ```bash
@@ -528,7 +559,8 @@ extension, so they belong in `dependencies`, not `devDependencies`.
 typed). Convert to visual only at export. Never store visual order — it would
 corrupt editing, search, and anything sent to the AI.
 
-### 14.4 Decision: annotations stored in PDF points
+### 14.4 RESOLVED: annotations stored in PDF points
+
 Every annotation is `{ page, x, y, width, height, ... }` in PDF points.
 Convert to CSS pixels only at render time, using the same viewport approach as
 the text layer.
@@ -545,11 +577,23 @@ nearly free. This single choice decides the checklist item "text box placement
 stays accurate across different zoom levels."
 
 ### 14.5 Immediate next actions, in order
-1. Settle the coordinate model (§14.4) — types + convert helpers.
-2. Then Phase 1 step 4, the text box tool. Store logical order; convert to
-   visual only at export, using the two-part fix from §14.3.
+
+Phase 1 steps 1–3 are done. Next is **step 4, the text box tool** — the first
+piece that puts all three foundations together: coordinates from §14.4, logical
+text storage from §14.3, and the page wrapper from `PdfPage`.
+
+Decisions already made that it must respect:
+
+- Store text in **logical order**, exactly as typed. Visual conversion happens
+  only at export.
+- Store geometry in **PDF points**. Convert through `coordinates.ts` at render
+  time — never store screen pixels.
+- Annotations live in a **flat array**; filter by page when rendering. Record-
+  by-page was considered and rejected (bucket bookkeeping, and export/undo/the
+  copilot list all want the flat shape).
 
 ### 14.6 Working conventions established
+
 - Explain the file and its non-obvious parts before writing code.
 - One file at a time.
 - Skeletons with TODO blocks; the human writes the component logic.
@@ -557,13 +601,14 @@ stays accurate across different zoom levels."
   operation. It will come up again in the annotation and export layers.
 
 ### 14.7 Decision: scanned / image-only PDFs are editor-only, no copilot
+
 The copilot requires a text layer. Scanned pages have none, and OCR is cut
 (§13). So the product line is:
 
-| PDF type | Viewer | Editor | Copilot |
-|---|---|---|---|
-| Text-based (incl. the Harel fixture) | ✅ | ✅ | ✅ |
-| Scanned / image-only | ✅ | ✅ | ❌ — states why |
+| PDF type                             | Viewer | Editor | Copilot         |
+| ------------------------------------ | ------ | ------ | --------------- |
+| Text-based (incl. the Harel fixture) | ✅     | ✅     | ✅              |
+| Scanned / image-only                 | ✅     | ✅     | ❌ — states why |
 
 This costs almost nothing to support, because **the editor never needed text.**
 Canvas rendering already works on scanned pages, and placing a text box or
@@ -573,6 +618,7 @@ rather than being a separate build.
 
 **What is required: degrading cleanly.** Someone will drop a scanned PDF in
 during the demo. Needed behaviour:
+
 - Page renders normally (already true)
 - Empty text layer doesn't throw — `streamTextContent()` on a page with no
   text should yield an empty stream, but this is **untested**; verify
