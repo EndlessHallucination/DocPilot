@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { loadPdf, type LoadedPdf } from "./pdf-setup";
+import { PdfPage } from "./PdfPage";
 
 const MIN_ZOOM = 50;
 const MAX_ZOOM = 300;
@@ -164,19 +165,5 @@ export function App() {
                 <PdfPage doc={pdf.doc} pageNumber={pageNumber} scale={scale} />
             </section>
         </main>
-    );
-}
-
-function PdfPage({
-    pageNumber,
-}: {
-    doc: LoadedPdf["doc"];
-    pageNumber: number;
-    scale: number;
-}) {
-    return (
-        <div className="self-start rounded bg-white p-8 shadow">
-            page {pageNumber} renders here
-        </div>
     );
 }
