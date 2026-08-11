@@ -1,6 +1,8 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { loadPdf, type LoadedPdf } from "./pdf-setup";
 import { PdfPage } from "./PdfPage";
+import { Toolbar } from "./ToolBar";
+import { useAnnotationStore } from "./useAnnotationStore";
 
 const MIN_ZOOM = 50;
 const MAX_ZOOM = 300;
@@ -13,6 +15,30 @@ export function App() {
     const [error, setError] = useState<string | null>(null);
 
     const scale = zoomPercent / 100;
+
+    const dirty = useAnnotationStore((s) => s.dirty);
+    const annotationCount = useAnnotationStore((s) => s.annotations.length);
+
+    /**
+ * Warn before losing work. Nothing persists — annotations are in-memory for
+ * the tab's lifetime (§8) — so a refresh or tab close is unrecoverable.
+ *
+ * The count guard matters: a stray click places a box and the empty-commit
+ * removes it, and both set dirty. Without it you get a warning over a
+ * document with nothing in it.
+ */
+    useEffect(() => {
+        if (!dirty || annotationCount === 0) return;
+
+        const handler = (e: BeforeUnloadEvent) => {
+            // Chrome shows its own generic text — it can't be customised, and
+            // returning a string no longer does anything.
+            e.preventDefault();
+        };
+
+        window.addEventListener("beforeunload", handler);
+        return () => window.removeEventListener("beforeunload", handler);
+    }, [dirty, annotationCount]);
 
     async function openFile(file: File) {
         setError(null);
@@ -113,7 +139,7 @@ export function App() {
     return (
 
         <main className="flex h-screen flex-col bg-gray-100">
-            <header className="flex shrink-0 items-center gap-4 border-b bg-white px-6 py-3">
+            <header data-editor-chrome className="flex shrink-0 items-center gap-4 border-b bg-white px-6 py-3">
                 <p className="mr-auto truncate font-medium">{pdf.name}</p>
 
                 <button
@@ -160,6 +186,8 @@ export function App() {
                     +
                 </button>
             </header>
+
+            <Toolbar pdf={pdf} />
 
             <section className="flex flex-1 justify-center overflow-auto p-8">
                 <PdfPage doc={pdf.doc} pageNumber={pageNumber} scale={scale} />
