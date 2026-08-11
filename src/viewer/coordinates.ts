@@ -25,7 +25,8 @@ export function cssPointToPdf(
 
     return { x, y };
 }
-
+export const cssLengthToPdf = (viewport: PageViewport, length: number): number =>
+    length / viewport.scale;
 /**
  * Stored annotation rect -> where to position the DOM element.
  *
@@ -46,6 +47,17 @@ export function pdfRectToCss(viewport: PageViewport, rect: PdfRect): CssRect {
     const height = rect.height * viewport.scale;
 
     return { left, top, width, height };
+}
+
+export function cssRectToPdf(viewport: PageViewport, rect: CssRect): PdfRect {
+    const [x, y] = viewport.convertToPdfPoint(rect.left, rect.top + rect.height);
+
+    return {
+        x,
+        y,
+        width: cssLengthToPdf(viewport, rect.width),
+        height: cssLengthToPdf(viewport, rect.height),
+    };
 }
 
 /**
