@@ -62,6 +62,8 @@ export interface ExtractedPage {
      */
     quality: "ok" | "empty";
     lineSource: "eol" | "clustered";
+    letters: { latin: number; rtl: number };
+
 
 }
 
@@ -81,9 +83,17 @@ const STRONG_LTR = /[A-Za-z\u00C0-\u024F]/;
 /** Anything bigger than float noise counts as rotated. */
 const ROTATION_EPSILON = 0.01;
 
-const MAX_ITEMS_PER_LINE = 8;
-const MIN_ITEMS_TO_JUDGE = 12;
+
+
 const CLUSTER_TOLERANCE_RATIO = 0.5;
+
+
+const STRONG_RTL_GLOBAL = /[\u0590-\u08FF\uFB1D-\uFDFF\uFE70-\uFEFF]/g;
+const STRONG_LTR_GLOBAL = /[A-Za-z\u00C0-\u024F]/g;
+
+const MAX_LINE_SPAN_RATIO = 3;
+const MAX_IMPLAUSIBLE_LINE_SHARE = 0.25;
+
 
 // ---------------------------------------------------------------------------
 // Entry point
@@ -122,7 +132,7 @@ export async function extractPageText(
     const viewport = page.getViewport({ scale: 1 });
 
     const { items } = await page.getTextContent();
-    const built = buildLines(items);
+    const built = buildLines(items, pageNumber);
     const lines = sortIntoReadingOrder(built.runGroups.map(orderLine));
     return {
         pageNumber,
@@ -131,6 +141,8 @@ export async function extractPageText(
         lines,
         lineSource: built.source,
         quality: lines.length > 0 ? "ok" : "empty",
+        letters: countLetters(lines),
+
     };
 }
 
@@ -205,6 +217,17 @@ function sortIntoReadingOrder(lines: Line[]): Line[] {
     return [...lines].sort((a, b) => b.y - a.y);
 }
 
+
+
+function countLetters(lines: Line[]): { latin: number; rtl: number } {
+    const text = lines.map((line) => line.text).join("");
+
+    return {
+        latin: (text.match(STRONG_LTR_GLOBAL) ?? []).length,
+        rtl: (text.match(STRONG_RTL_GLOBAL) ?? []).length,
+    };
+}
+
 function isRotated(transform: number[]): boolean {
     return (
         Math.abs(transform[1]) > ROTATION_EPSILON ||
@@ -255,33 +278,54 @@ function orderLine(runs: Run[]): Line {
         hasSuspectText: runs.some((r) => r.suspectRanges.length > 0),
     };
 }
+function isImplausibleLine(runs: Run[]): boolean {
+    const ys = runs.map((r) => r.y);
+    const span = Math.max(...ys) - Math.min(...ys);
 
-function buildLines(items: (TextItem | TextMarkedContent)[]): BuiltLines {
+    // 9pt fallback: some producers emit zero-height whitespace items, and
+    // dividing by zero would condemn every line containing one.
+    const tallest = Math.max(...runs.map((r) => r.height || 9), 1);
+
+    return span > tallest * MAX_LINE_SPAN_RATIO;
+}
+
+function buildLines(
+    items: (TextItem | TextMarkedContent)[],
+    pageNumber: number,
+): BuiltLines {
     const eolGroups = splitIntoLines(items);
 
-    // Count only what could have formed a line, so the ratio isn't skewed by
-    // the delimiters themselves or by the rotated margin stamp.
-    const textItems = items.filter(
-        (item) =>
-            "transform" in item &&
-            item.str !== "" &&
-            !isRotated(item.transform),
-    ).length;
+    // Nothing on the page — blank, or image-only. Not a failure, and there is
+    // nothing for clustering to do differently.
+    if (eolGroups.length === 0) return { runGroups: [], source: "eol" };
 
-    if (textItems < MIN_ITEMS_TO_JUDGE) return { runGroups: eolGroups, source: "eol" };
-    if (eolGroups.length === 0) return { runGroups: clusterIntoLines(items), source: "clustered" };
+    const implausible = eolGroups.filter(isImplausibleLine).length;
+    const share = implausible / eolGroups.length;
 
-    const itemsPerLine = textItems / eolGroups.length;
-    if (itemsPerLine <= MAX_ITEMS_PER_LINE) return { runGroups: eolGroups, source: "eol" };
+    if (share <= MAX_IMPLAUSIBLE_LINE_SHARE) return { runGroups: eolGroups, source: "eol" };
+
+    // Worst offender in the message: a document with no hasEOL at all shows a
+    // ratio in the dozens, while a marginal case shows 3 or 4. That number is
+    // the difference between "the guard is working" and "the threshold needs
+    // looking at", and it costs one line to print.
+    const worst = Math.max(
+        ...eolGroups.map((runs) => {
+            const ys = runs.map((r) => r.y);
+            const tallest = Math.max(...runs.map((r) => r.height || 9), 1);
+            return (Math.max(...ys) - Math.min(...ys)) / tallest;
+        }),
+    );
 
     console.warn(
-        `[copilot] ${eolGroups.length} line(s) from ${textItems} items ` +
-        `(${itemsPerLine.toFixed(1)} per line) — hasEOL markers look absent. ` +
-        `Rebuilding lines from baselines; grouping will be less reliable.`,
+        `[copilot] page ${pageNumber}: ${implausible} of ${eolGroups.length} lines ` +
+        `span more than ${MAX_LINE_SPAN_RATIO}× their glyph height ` +
+        `(worst ${worst.toFixed(1)}×). hasEOL markers look unreliable; ` +
+        `rebuilding from baselines.`,
     );
 
     return { runGroups: clusterIntoLines(items), source: "clustered" };
 }
+
 function clusterIntoLines(items: (TextItem | TextMarkedContent)[]): Run[][] {
     const runs: Run[] = [];
 

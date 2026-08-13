@@ -6,6 +6,7 @@ import { useAnnotationStore } from "./useAnnotationStore";
 import { runExtraction, type Extraction } from "../copilot/run-extraction";
 import { verifyExtraction } from "../copilot/verify";
 import { CopilotPanel } from "../copilot/CopilotPanel";
+import { copilotStore } from "../copilot/copilotStore";
 
 const MIN_ZOOM = 50;
 const MAX_ZOOM = 300;
@@ -48,7 +49,7 @@ export function App() {
     async function openFile(file: File) {
         setError(null);
         setExtraction(null);          // clear before, so a failed open can't leave stale fields on screen
-
+        copilotStore.getState().resetResults();
         try {
             const buffer = await file.arrayBuffer();
             const loaded = await loadPdf(new Uint8Array(buffer), file.name);

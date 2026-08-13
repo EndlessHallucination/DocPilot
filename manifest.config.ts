@@ -12,17 +12,13 @@ export default defineManifest({
     host_permissions: [
         'https://api.anthropic.com/*',
         'https://api.openai.com/*',
+        'https://api.groq.com/*',
     ],
 
     action: { default_title: "Open PDF Copilot" },
     background: { service_worker: "src/background/service-worker.ts", type: "module" },
-    
-    web_accessible_resources: [
-        {
-            "resources": ["fonts/*"],
-            "matches": ["<all_urls>"]
-        }
-    ],
+
+
 
     content_security_policy: {
         extension_pages: "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'",

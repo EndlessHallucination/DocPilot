@@ -101,6 +101,8 @@ export interface DetectionResult {
     payload: PayloadLine[];
     geometry: Map<string, FieldGeometry>;
     markOffset: number;
+    corruptionCheckApplied: boolean;
+
 }
 
 // ---------------------------------------------------------------------------
@@ -130,6 +132,13 @@ const FALLBACK_MARK_OFFSET = 3;
 /** A mark with no box to sit in gets this size, in points. */
 const DEFAULT_MARK_SIZE = 9;
 
+const LATIN_SHARE_DISABLING_CORRUPTION_CHECK = 0.15;
+
+const LITERAL_BLANK_PATTERNS: RegExp[] = [
+    /_(?:\s?_){2,}/g,
+    /\.(?:\s?\.){4,}/g,
+    /-(?:\s?-){3,}/g,
+];
 // ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
@@ -144,6 +153,11 @@ export function detectFields(
     // Calibrate first, across the whole document. See calibrateMarkOffset.
     const offset = calibrateMarkOffset(pages, geometry);
     const markSize = geometry.checkboxSize ?? DEFAULT_MARK_SIZE;
+    const latin = pages.reduce((n, p) => n + p.letters.latin, 0);
+    const rtl = pages.reduce((n, p) => n + p.letters.rtl, 0);
+    const totalLetters = latin + rtl;
+    const corruptionCheckApplies =
+        totalLetters === 0 || latin / totalLetters < LATIN_SHARE_DISABLING_CORRUPTION_CHECK;
 
     for (const page of pages) {
         const shapes = geometry.pages.find((p) => p.pageNumber === page.pageNumber);
@@ -179,7 +193,27 @@ export function detectFields(
             }
 
             const leader = leaders.get(line);
-            if (leader || hasWideGap(line)) {
+            const literals = literalBlanks(line);
+
+            // Literal blanks are per-blank, so they emit one field each. A
+            // drawn leader or a text gap still emits a single field for the
+            // line — neither of those detectors can tell two blanks apart.
+            for (const rect of literals) {
+                const ref = `${id}f${fields.length}`;
+
+                fields.push({ ref, kind: "writeIn" });
+                map.set(ref, {
+                    id: ref,
+                    page: page.pageNumber,
+                    markRect: rect,
+                    // True: an underscore run is ink actually printed on the
+                    // form, not a calibrated guess. The flag means "we know
+                    // where this goes", not "a vector shape was found".
+                    fromDrawnShape: true,
+                });
+            }
+
+            if (literals.length === 0 && (leader || hasWideGap(line))) {
                 const ref = `${id}f${fields.length}`;
 
                 fields.push({ ref, kind: "writeIn" });
@@ -196,7 +230,9 @@ export function detectFields(
                 page: page.pageNumber,
                 text: line.text,
                 ...(fields.length > 0 ? { fields } : {}),
-                ...(line.hasSuspectText ? { unreliableText: true as const } : {}),
+                ...(corruptionCheckApplies && line.hasSuspectText
+                    ? { unreliableText: true as const }
+                    : {}),
             });
 
             // Every line also gets a fallback entry under its own id, so a line
@@ -214,7 +250,7 @@ export function detectFields(
         });
     }
 
-    return { payload, geometry: map, markOffset: offset };
+    return { payload, geometry: map, markOffset: offset, corruptionCheckApplied: corruptionCheckApplies };
 }
 
 // ---------------------------------------------------------------------------
@@ -372,6 +408,38 @@ function overlappingRun(line: Line, comb: CombField): Run | null {
     return best;
 }
 
+
+function literalBlanks(line: Line): GeometryRect[] {
+    const rects: GeometryRect[] = [];
+
+    for (const run of line.runs) {
+        if (run.text.length === 0) continue;
+
+        for (const pattern of LITERAL_BLANK_PATTERNS) {
+            // matchAll on a /g regex is safe to reuse — it clones internally
+            // rather than advancing lastIndex on the shared object.
+            for (const match of run.text.matchAll(pattern)) {
+                if (match.index === undefined) continue;
+
+                const perChar = run.width / run.text.length;
+                const width = match[0].length * perChar;
+
+                // A run's x is its LEFT edge regardless of script, but logical
+                // character index counts from the right in RTL. Measuring from
+                // the wrong end puts the mark on the far side of the run —
+                // the same class of error as §8.9's text-edge warning.
+                const x =
+                    run.dir === "rtl"
+                        ? run.x + run.width - (match.index + match[0].length) * perChar
+                        : run.x + match.index * perChar;
+
+                rects.push({ x, y: run.y, width, height: run.height });
+            }
+        }
+    }
+
+    return rects.sort((a, b) => a.x - b.x);
+}
 // ---------------------------------------------------------------------------
 // Text gaps
 // ---------------------------------------------------------------------------
