@@ -1,8 +1,9 @@
 /**
  * copilot/CopilotPanel.tsx
  *
- * The field list, and now the copilot's answers. §9.1 step 3 plus §9.3's
- * results rendered onto the rows it already had.
+ * The field list, the copilot's per-field answers, and the follow-up question
+ * box. §9.1 step 3 plus §9.3's results rendered onto the rows it already had,
+ * plus §9.7.
  *
  * ─── WHY IT EXISTS AT ALL ────────────────────────────────────────────────
  * The viewer is page-at-a-time with no continuous scroll (§6.12). Scrolling
@@ -18,9 +19,9 @@
  * inside [data-annotation-id] or [data-editor-chrome] (§6.10).
  *
  * Without that attribute on the root, every click in this panel — including
- * clicking a row to jump to its page, and every keystroke in the context form —
- * deselects whatever annotation the user is holding. It reads as a random,
- * intermittent bug. Do not remove it.
+ * clicking a row to jump to its page, every keystroke in the context form, and
+ * every keystroke in the question box — deselects whatever annotation the user
+ * is holding. It reads as a random, intermittent bug. Do not remove it.
  *
  * ─── SHOWING ALL LINES IS DELIBERATE, AND CONTRARY TO §9.1 ───────────────
  * §9.1 specified one row per TAGGED line. That was written assuming one known
@@ -197,7 +198,158 @@ export function CopilotPanel({ extraction, pageNumber, onSelectPage }: Props) {
                     );
                 })}
             </ul>
+
+            {/* Last child, and OUTSIDE the scrolling <ul> above. The list is
+                124 rows; a question box that scrolls away with it is a feature
+                nobody finds. shrink-0 keeps it pinned while the list flexes. */}
+            <AskBox payload={payload} />
         </Shell>
+    );
+}
+
+// ---------------------------------------------------------------------------
+// §9.7 — the follow-up question box
+// ---------------------------------------------------------------------------
+
+/**
+ * A free-text question about the form, answered with the document already in
+ * context.
+ *
+ * ─── WHY IT'S SEPARATE FROM THE MARKERS ──────────────────────────────────
+ * Markers answer "what goes in this field". They cannot answer "what does
+ * מס שבירה mean" or "I have a loan against the account — does that change
+ * which box I tick". Those questions have no coordinate to attach to, and they
+ * are the ones that actually stop someone filling a form.
+ *
+ * ─── ⚠ IT MUST KEEP WORKING WHEN CLASSIFICATION DOESN'T ──────────────────
+ * Nothing here reads `status`, `error` or `classifications`. That is §10's
+ * network-failure fallback: if the big call dies live, this still answers
+ * questions, which recovers a demo far better than narrating screenshots.
+ * Don't "tidy" this by disabling the box until classification has run.
+ *
+ * ─── ⚠ THE DRAFT IS LOCAL STATE, NOT STORE STATE ─────────────────────────
+ * Every keystroke would otherwise re-render the 124-row line list above — the
+ * exact cost CopilotPanel's useMemo exists to avoid. It also means the store
+ * cannot clear the box, which is why ask() returns a boolean: clear only on
+ * success, so a failed request leaves the question there to retry.
+ */
+function AskBox({ payload }: { payload: PayloadLine[] }) {
+    const [draft, setDraft] = useState("");
+
+    const thread = useCopilotStore((s) => s.askThread);
+    const pending = useCopilotStore((s) => s.pendingQuestion);
+    const askStatus = useCopilotStore((s) => s.askStatus);
+    const askError = useCopilotStore((s) => s.askError);
+
+    const loading = askStatus === "loading";
+
+    async function send() {
+        if (loading) return;
+
+        const answered = await copilotStore.getState().ask(payload, draft);
+        if (answered) setDraft("");
+    }
+
+    return (
+        <section className="shrink-0 border-t">
+            {/* TODO styling. Auto-scroll to the newest turn is NOT implemented:
+                add a ref on the last item and scrollIntoView({ block: "end" })
+                in a layout effect keyed on thread.length + pending. Do it in a
+                LAYOUT effect, not useEffect — the answer can be several
+                paragraphs, and a passive effect scrolls after the browser has
+                already painted the pre-growth height, which flashes. */}
+            {(thread.length > 0 || pending) && (
+                <ul className="max-h-64 overflow-auto px-4 py-3">
+                    {thread.map((turn, index) => (
+                        // Index keys are safe here and only here: the thread is
+                        // append-only and never reordered or filtered.
+                        <li key={index} className="mb-3">
+                            {/* ⚠ dir="auto" PER MESSAGE, never on a shared
+                                parent. The question may be Hebrew while the
+                                answer is English by ask.ts's rule — one
+                                container's direction renders one of them
+                                backwards. Same reasoning as LineRow (§8.3). */}
+                            <p dir="auto" className="text-sm font-medium">
+                                {turn.question}
+                            </p>
+                            {/* whitespace-pre-line: ask.ts asks for plain text,
+                                and the model separates paragraphs with newlines
+                                that would otherwise collapse. */}
+                            <p dir="auto" className="mt-1 whitespace-pre-line text-sm text-gray-700">
+                                {turn.answer}
+                            </p>
+                        </li>
+                    ))}
+
+                    {pending && (
+                        <li className="mb-3">
+                            <p dir="auto" className="text-sm font-medium">
+                                {pending}
+                            </p>
+                            <p className="mt-1 text-sm text-gray-500">Reading the form…</p>
+                        </li>
+                    )}
+                </ul>
+            )}
+
+            <div className="p-4">
+                {/* ⚠ NOT A <form>. A real form in an extension page submits and
+                    navigates, which unmounts the viewer and loses the document,
+                    every annotation and the whole thread. Nothing here persists
+                    across a reload (§4). */}
+                <textarea
+                    value={draft}
+                    onChange={(e) => setDraft(e.target.value)}
+                    onKeyDown={(e) => {
+                        // Enter sends, Shift+Enter breaks the line. isComposing
+                        // guards an IME mid-word — pressing Enter to accept a
+                        // candidate would otherwise send a half-typed question.
+                        if (e.key !== "Enter" || e.shiftKey || e.nativeEvent.isComposing) return;
+
+                        e.preventDefault();
+                        void send();
+                    }}
+                    // TODO verify against AnnotationLayer's keyboard handling.
+                    // If Delete/Backspace is bound at DOCUMENT level rather than
+                    // on the layer element, editing text here will delete the
+                    // selected annotation (§5.1: selectedId means Delete removes
+                    // it). ContextForm has the same exposure, so if it's already
+                    // fine, this is too — check, don't assume. The fix if it
+                    // bites is a target check in the layer's handler, NOT
+                    // stopPropagation here, which would mask it for one input
+                    // and leave the next one broken.
+                    rows={2}
+                    dir="auto"
+                    placeholder="Ask about anything on this form"
+                    className="w-full resize-none rounded border px-3 py-2 text-sm"
+                />
+
+                <button
+                    type="button"
+                    disabled={loading || draft.trim() === ""}
+                    onClick={() => void send()}
+                    className="mt-2 w-full rounded bg-black px-4 py-2 text-white disabled:opacity-40"
+                >
+                    {loading ? "Thinking…" : "Ask"}
+                </button>
+
+                {/* ask.ts and provider.ts already write these for a user, so
+                    don't wrap them in "Error:". */}
+                {askStatus === "error" && askError && (
+                    <p className="mt-2 text-sm text-red-600">{askError}</p>
+                )}
+
+                {thread.length === 0 && !pending && askStatus !== "error" && (
+                    // An empty panel is an invitation, so it names the two
+                    // things this answers that markers can't: what a term
+                    // means, and whether an option applies to you.
+                    <p className="mt-2 text-xs text-gray-500">
+                        Ask what a term means, or whether one of the options applies to your
+                        situation.
+                    </p>
+                )}
+            </div>
+        </section>
     );
 }
 

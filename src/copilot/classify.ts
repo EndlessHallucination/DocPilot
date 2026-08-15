@@ -2,38 +2,38 @@
  * copilot/classify.ts
  *
  * §9.3 — sends the document's text to the model and gets back a verdict per
- * field. The ONE function that talks to a provider.
+ * field.
  *
- * ─── ⚠ ONE FUNCTION, BRANCHING INTERNALLY ────────────────────────────────
- * getFieldClassifications is the only export that calls out. §9.5: never
- * scatter `if (provider === 'openai')` through UI code. A component asks for
- * classifications and gets classifications; which provider served them is not
- * its business, and keeping it that way is what makes adding a provider a
- * change to PROVIDER_CONFIG rather than a change everywhere.
+ * ─── WHAT THIS FILE IS NOW ───────────────────────────────────────────────
+ * The classification TASK: its prompt, how the payload is turned into a
+ * message, and how the answer is validated. Talking to a provider moved to
+ * provider.ts when §9.7 needed a second caller — endpoints, request shapes,
+ * timeouts and error vocabulary all live there.
  *
- * Groq speaks OpenAI's Chat Completions contract, so it shares that code path
- * entirely — the only differences are the host and the model name. There are
- * three providers but only TWO request shapes.
+ * §9.5's rule survives the split unchanged: no UI code contains
+ * `if (provider === "openai")`. A component asks for classifications and gets
+ * classifications.
  *
  * ─── ⚠ EVERY LINE GOES, NOT A FILTERED LIST OF BLANKS ────────────────────
  * The payload is all ~124 lines including headings, fine print and the address
  * block. That is the design, not laziness (§3.1). Geometry cannot find a field
  * created by a heading that says "mark the relevant options below", and the
  * fixture has nine eligibility clauses with only eight checkboxes drawn — a
- * filtered list silently loses the ninth. The model reads everything and
- * decides.
+ * filtered list silently loses the ninth. The W-9 proves it harder: that form
+ * draws no rectangles at all, and the model still returned "fill in" for line
+ * 1, which has no detectable affordance of any kind (§8.17).
  *
- * ─── ⚠ COORDINATES NEVER LEAVE ───────────────────────────────────────────
- * PayloadLine carries no geometry by construction, and buildUserMessage
- * re-projects each line field by field rather than spreading the object, so a
- * coordinate added to PayloadLine later cannot silently start being uploaded.
- * That is the entire privacy claim: text out, positions stay.
+ * ─── ⚠ COORDINATES NEVER LEAVE — AND projectLines IS THE PROOF ───────────
+ * PayloadLine carries no geometry by construction, and projectLines rebuilds
+ * each line FIELD BY FIELD rather than spreading it, so a coordinate added to
+ * PayloadLine later cannot silently start being uploaded.
  *
- * ─── ⚠ NEVER LOG THE KEY ─────────────────────────────────────────────────
- * Not in an error path either. Provider errors surface their status and the
- * response body; the request headers never do.
+ * It is exported for ask.ts (§9.7) deliberately. A second feature writing its
+ * own serialisation would create a second place a coordinate could leak, and
+ * you would have to audit both forever. One function, one audit.
  */
 
+import { callProvider, describeError } from "./provider";
 import type { PayloadLine } from "./detect-field";
 import type { Provider } from "./copilotStore";
 
@@ -68,71 +68,31 @@ export interface UserContext {
     goal: string;
 }
 
-interface ProviderConfig {
-    url: string;
-    model: string;
-    openAiCompatible: boolean;
-    /**
-     * Output ceiling. Per-provider because Groq's free tier counts this
-     * toward its tokens-per-minute cap BEFORE the request runs — an unused
-     * 8000 still consumes the budget. The Hebrew fixture is ~8,200 input
-     * tokens against a 12,000 TPM limit, so anything above ~3,500 is
-     * rejected outright with a 413.
-     */
-    maxTokens: number;
-}
-
 // ---------------------------------------------------------------------------
 // Tuning
 // ---------------------------------------------------------------------------
 
 /**
- * Endpoint and model per provider. ONE PLACE, because these names move and a
- * stale one produces a 404 that reads like a broken integration.
+ * Past this, give up and say so. Generous because a full document is a real
+ * amount of thinking — 124 lines of verdicts is not a chat reply.
  *
- * Verify before a demo. Groq's catalogue rotates fastest — check
- * console.groq.com/docs/models.
+ * ⚠ Deliberately different from ask.ts's, which is much shorter. A user
+ * watching a question box will assume 90 seconds means "broken" and reload,
+ * which loses the extraction and every annotation on the page.
  */
-const PROVIDER_CONFIG: Record<Provider, ProviderConfig> = {
-    anthropic: {
-        url: "https://api.anthropic.com/v1/messages",
-        model: "claude-sonnet-5",
-        openAiCompatible: false,
-        maxTokens: 8000,
-    },
-    openai: {
-        url: "https://api.openai.com/v1/chat/completions",
-        model: "gpt-5.6",
-        openAiCompatible: true,
-        maxTokens: 8000,
-
-    },
-    groq: {
-        url: "https://api.groq.com/openai/v1/chat/completions",
-        model: "llama-3.3-70b-versatile",
-        openAiCompatible: true,
-        maxTokens: 3000,
-
-    },
-};
+const CLASSIFY_TIMEOUT_MS = 90_000;
 
 /**
- * A whole document's worth of verdicts. 124 lines × a short object each needs
- * real room, and a truncated response is unparseable JSON — which surfaces as
+ * A whole document's worth of verdicts needs real room: 124 lines × a short
+ * object each. A truncated response is unparseable JSON, which surfaces as
  * "the model returned something unreadable" rather than as the length problem
  * it actually is.
  *
- * ⚠ Groq's free tier caps TOKENS PER MINUTE (12K on llama-3.3-70b-versatile),
- * and Hebrew tokenizes badly. Input plus this ceiling can exceed the cap in a
- * single request. Lower it to ~4000 if Groq starts returning 429s.
+ * A REQUEST, NOT A GUARANTEE — provider.ts clamps this down to the provider's
+ * own ceiling. Groq's is 3000 (§8.18), which is why Groq cannot run the Hebrew
+ * fixture at all and is for pipeline testing on Latin documents only.
  */
-
-/**
- * Past this, give up and say so. §9.6 requires a timeout on web search for the
- * same reason it's needed here: no network call may hang the UI. Generous
- * because a full document is a real amount of thinking.
- */
-const TIMEOUT_MS = 90_000;
+const CLASSIFY_MAX_TOKENS = 8000;
 
 // ---------------------------------------------------------------------------
 // Prompt
@@ -189,11 +149,23 @@ Return ONLY a JSON object, no prose and no markdown fences:
 - "skip": it is a field but does not apply to them, with the reason why
 - "unclear": you cannot tell without information they haven't given`;
 
-function buildUserMessage(payload: PayloadLine[], context: UserContext): string {
-    // Projected field by field rather than JSON.stringify(payload). If a
-    // coordinate is ever added to PayloadLine, a spread would upload it
-    // silently; this cannot.
-    const lines = payload.map((line) => ({
+/**
+ * Turn the payload into the plain objects that get serialised and uploaded.
+ *
+ * ⚠ THIS IS THE PRIVACY BOUNDARY. Everything above it may hold coordinates;
+ * nothing below it does. Rebuilt field by field rather than spread for exactly
+ * that reason — `{ ...line }` would upload any property added to PayloadLine
+ * later, silently and forever.
+ *
+ * Cell counts DO go, because they change the answer: "nine cells, one
+ * character each" produces nine digits, and a six-cell date wants DDMMYY where
+ * an eight-cell one wants DDMMYYYY (§3.2). The model cannot know which without
+ * being told, and the text layer does not contain it.
+ *
+ * Exported for ask.ts. Do not write a second one.
+ */
+export function projectLines(payload: PayloadLine[]) {
+    return payload.map((line) => ({
         id: line.id,
         page: line.page,
         text: line.text,
@@ -208,13 +180,15 @@ function buildUserMessage(payload: PayloadLine[], context: UserContext): string 
             : {}),
         ...(line.unreliableText ? { unreliableText: true } : {}),
     }));
+}
 
+function buildUserMessage(payload: PayloadLine[], context: UserContext): string {
     return [
         `What this document is: ${context.documentDescription || "(not stated)"}`,
         `What the person needs to do: ${context.goal || "(not stated)"}`,
         "",
         "Form lines:",
-        JSON.stringify(lines),
+        JSON.stringify(projectLines(payload)),
     ].join("\n");
 }
 
@@ -228,111 +202,29 @@ export async function getFieldClassifications(
     provider: Provider,
     apiKey: string,
 ): Promise<ClassificationResult> {
-    if (!apiKey.trim()) {
-        return { ok: false, error: "No API key. Add one above to use the copilot." };
-    }
+    // No key check here — provider.ts rejects an empty key with the message
+    // the user needs, and duplicating it means two strings to keep in step.
+    const result = await callProvider({
+        system: SYSTEM_PROMPT,
+        message: buildUserMessage(payload, context),
+        provider,
+        apiKey,
+        json: true,
+        maxTokens: CLASSIFY_MAX_TOKENS,
+        timeoutMs: CLASSIFY_TIMEOUT_MS,
+    });
 
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+    if (!result.ok) return { ok: false, error: result.error };
 
+    // ⚠ THE PARSE NEEDS ITS OWN try/catch. callProvider has already returned
+    // successfully by this point, so a malformed answer throws out of THIS
+    // function, not out of the transport. Losing this catch turns a bad reply
+    // into an unhandled rejection and the panel spins forever.
     try {
-        const message = buildUserMessage(payload, context);
-        const config = PROVIDER_CONFIG[provider];
-
-        const raw = config.openAiCompatible
-            ? await callOpenAiCompatible(message, apiKey, config, controller.signal)
-            : await callAnthropic(message, apiKey, config, controller.signal);
-
-        return { ok: true, classifications: parseResponse(raw, payload) };
+        return { ok: true, classifications: parseResponse(result.text, payload) };
     } catch (error) {
-        return { ok: false, error: describeError(error) };
-    } finally {
-        // In finally, not after the await — an early return or a throw would
-        // otherwise leave the timer live and abort a later request.
-        clearTimeout(timer);
+        return { ok: false, error: describeError(error, CLASSIFY_TIMEOUT_MS) };
     }
-}
-
-// ---------------------------------------------------------------------------
-// Providers
-// ---------------------------------------------------------------------------
-
-async function callAnthropic(
-    message: string,
-    apiKey: string,
-    config: ProviderConfig,
-    signal: AbortSignal,
-): Promise<string> {
-    const response = await fetch(config.url, {
-        method: "POST",
-        signal,
-        headers: {
-            "content-type": "application/json",
-            "x-api-key": apiKey,
-            "anthropic-version": "2023-06-01",
-            // ⚠ REQUIRED FOR BROWSER CALLS. Without it the API rejects the
-            // request on CORS grounds and the error looks like a network
-            // failure rather than a missing header.
-            "anthropic-dangerous-direct-browser-access": "true",
-        },
-        body: JSON.stringify({
-            model: config.model,
-            max_tokens: config.maxTokens,
-            system: SYSTEM_PROMPT,
-            messages: [{ role: "user", content: message }],
-        }),
-    });
-
-    if (!response.ok) throw await providerError(response);
-
-    const data = await response.json();
-
-    // content is an array of blocks; concatenate the text ones rather than
-    // assuming content[0].
-    return (data.content ?? [])
-        .filter((block: { type: string }) => block.type === "text")
-        .map((block: { text: string }) => block.text)
-        .join("");
-}
-
-/**
- * The OpenAI Chat Completions shape, used by OpenAI and by Groq.
- *
- * Groq implements the same contract deliberately, so sharing this function is
- * what keeps adding a compatible provider a one-line change to
- * PROVIDER_CONFIG rather than a new branch here.
- */
-async function callOpenAiCompatible(
-    message: string,
-    apiKey: string,
-    config: ProviderConfig,
-    signal: AbortSignal,
-): Promise<string> {
-    const response = await fetch(config.url, {
-        method: "POST",
-        signal,
-        headers: {
-            "content-type": "application/json",
-            authorization: `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify({
-            model: config.model,
-            max_completion_tokens: config.maxTokens,
-            // Guarantees parseable JSON. Anthropic gets the same result by
-            // instruction alone — an asymmetry that's fine to keep, since
-            // parseResponse tolerates both.
-            response_format: { type: "json_object" },
-            messages: [
-                { role: "system", content: SYSTEM_PROMPT },
-                { role: "user", content: message },
-            ],
-        }),
-    });
-
-    if (!response.ok) throw await providerError(response);
-
-    const data = await response.json();
-    return data.choices?.[0]?.message?.content ?? "";
 }
 
 // ---------------------------------------------------------------------------
@@ -346,12 +238,17 @@ async function callOpenAiCompatible(
  * detect-fields' geometry map, so a marker for it has nowhere to go. Dropping
  * it here means the failure is one missing row rather than an undefined rect
  * reaching the annotation layer.
+ *
+ * ⚠ IDS ARE ARRAY POSITIONS (§8.14). They shift whenever line splitting
+ * changes, so a payload and its verdicts are only valid together. Never cache
+ * classifications across a re-extraction.
  */
 function parseResponse(raw: string, payload: PayloadLine[]): FieldClassification[] {
     const known = new Set(payload.map((line) => line.id));
 
     // Models wrap JSON in markdown fences despite being told not to, and the
-    // instruction is not worth a retry loop.
+    // instruction is not worth a retry loop. Anthropic needs this; the
+    // OpenAI-compatible providers are held to it by response_format.
     const cleaned = raw.replace(/```json/gi, "").replace(/```/g, "").trim();
 
     let parsed: unknown;
@@ -382,8 +279,13 @@ function parseResponse(raw: string, payload: PayloadLine[]): FieldClassification
             typeof e.reason === "string"
         );
     });
+
     if (import.meta.env.DEV && kept.length !== entries.length) {
-        const dropped = entries.filter((e) => !kept.includes(e as FieldClassification));
+        // Set membership, not kept.includes() — includes() is a linear scan
+        // inside a filter, so the old version was quadratic on the exact input
+        // that triggers it (a model returning many bad rows).
+        const keptSet = new Set<unknown>(kept);
+        const dropped = entries.filter((e) => !keptSet.has(e));
 
         console.warn(
             `[copilot] dropped ${dropped.length} of ${entries.length} classifications.`,
@@ -392,60 +294,4 @@ function parseResponse(raw: string, payload: PayloadLine[]): FieldClassification
     }
 
     return kept;
-
-}
-
-// ---------------------------------------------------------------------------
-// Errors
-// ---------------------------------------------------------------------------
-
-/**
- * Turn a provider failure into something a user can act on.
- *
- * Status codes are mapped by hand because the raw bodies are unhelpful at
- * exactly the moments that matter: a 401 during a demo needs to say "your key
- * was rejected", not surface a JSON error object.
- */
-async function providerError(response: Response): Promise<Error> {
-    if (response.status === 401 || response.status === 403) {
-        return new Error("The provider rejected your API key. Check it and try again.");
-    }
-
-    // On Groq's free tier a 429 is usually the TOKENS-per-minute cap rather
-    // than requests-per-minute, and a whole document is one large request —
-    // so "wait a moment" is the right advice but "send less" may be needed.
-    if (response.status === 429) {
-        return new Error("Rate limited by the provider. Wait a moment and try again.");
-    }
-
-    if (response.status === 413) {
-        const body = await response.text().catch(() => "");
-        return new Error(
-            `Too large for this provider's per-minute limit. ${body.slice(0, 300)}`,
-        );
-    }
-
-    if (response.status >= 500) {
-        return new Error("The provider is having trouble. Try again shortly.");
-    }
-
-    // Body only as a fallback, and never the request — the key is in the
-    // headers we sent, never in the response.
-    const body = await response.text().catch(() => "");
-    return new Error(`Provider error ${response.status}. ${body.slice(0, 200)}`);
-}
-
-function describeError(error: unknown): string {
-    if (error instanceof DOMException && error.name === "AbortError") {
-        return `The request took longer than ${TIMEOUT_MS / 1000} seconds and was stopped.`;
-    }
-
-    if (error instanceof TypeError) {
-        // fetch rejects with TypeError for network failure AND for CORS. On
-        // this extension that almost always means host_permissions is missing
-        // the provider's origin.
-        return "Couldn't reach the provider. Check your connection and that the extension is allowed to call it.";
-    }
-
-    return error instanceof Error ? error.message : "Something went wrong.";
 }
