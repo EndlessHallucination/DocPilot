@@ -17,6 +17,7 @@ import type {
     SymbolAnnotation,
     SignatureAnnotation,
 } from "../state/annotations";
+import { assetUrl } from "../copilot/storage";
 const bidi = bidiFactory();
 
 /** Logical order (as typed) -> visual order (as drawn). */
@@ -74,13 +75,14 @@ const SYMBOL_STROKE = 12;
 const FONT_URL = "fonts/NotoSansHebrew-Regular.ttf";
 
 async function loadFontBytes(): Promise<ArrayBuffer> {
-    const url = chrome.runtime.getURL(FONT_URL);
+    const url = assetUrl(FONT_URL);
     const response = await fetch(url);
     if (!response.ok) {
         throw new Error(`Failed to load export font (${response.status})`);
     }
     return response.arrayBuffer();
 }
+
 function isRtl(text: string): boolean {
     for (const char of text) {
         if (/\p{Script=Hebrew}|\p{Script=Arabic}/u.test(char)) return true;

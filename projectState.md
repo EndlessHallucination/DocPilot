@@ -1724,3 +1724,5 @@ started a new job in June 2026
 
 The model then reasons explicitly about `התחלתי לעבוד במקום חדש`, a clause with
 no checkbox drawn beside it. **That is the demo's best single moment.**
+
+- https://pdf-copilot.netlify.app/

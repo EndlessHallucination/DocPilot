@@ -6,9 +6,17 @@
  * (§9.7). Separate from annotationStore, deliberately — an AI response must
  * never mark the document dirty.
  *
- * ─── ⚠ WHAT MAY BE PERSISTED, AND WHAT MAY NOT ───────────────────────────
- * chrome.storage.local holds ONE key: { provider, apiKey }. Nothing else in
- * this file may ever be written to it.
+* ─── ⚠ WHAT MAY BE PERSISTED, AND WHAT MAY NOT ───────────────────────────
+ * Persistent storage holds ONE key: { provider, apiKey }. Nothing else in
+ * this file may ever be written to it. Which backend that is — chrome.storage
+ * in the extension, localStorage on the web — is copilot/storage.ts's problem,
+ * not this file's.
+ *
+ * The context answers are the most personal thing in the app (§4), and the ask
+ * thread is worse — it is a transcript of someone's questions about their own
+ * severance withdrawal. In memory, gone on refresh or tab close. That is the
+ * privacy story, and it is only true as long as persist() keeps taking a
+ * StoredCredentials and nothing wider.
  *
  * The context answers are the most personal thing in the app (§4), and the ask
  * thread is worse — it is a transcript of someone's questions about their own
@@ -23,7 +31,7 @@ import { getFieldClassifications, type FieldClassification } from "./classify";
 import { askQuestion, type AskTurn } from "./ask";
 import { COPILOT_DEV } from "./dev";
 import type { PayloadLine } from "./detect-field";
-
+import { readStored, writeStored, removeStored } from "./storage";
 export type Provider = "anthropic" | "openai" | "groq";
 
 export const PROVIDERS: Array<{ id: Provider; label: string; keyLabel: string }> = [
@@ -230,8 +238,7 @@ export const copilotStore = createStore<CopilotState>((set, get) => ({
 
     async loadCredentials() {
         try {
-            const stored = await chrome.storage.local.get(STORAGE_KEY);
-            const saved = stored[STORAGE_KEY] as StoredCredentials | undefined;
+            const saved = await readStored<StoredCredentials>(STORAGE_KEY);
 
             set({
                 provider: saved?.provider ?? "anthropic",
@@ -275,7 +282,7 @@ export const copilotStore = createStore<CopilotState>((set, get) => ({
         set({ apiKey: "" });
 
         try {
-            await chrome.storage.local.remove(STORAGE_KEY);
+            await removeStored(STORAGE_KEY);
         } catch {
             // Nothing useful to do. The in-memory value is already gone, which
             // is what the user asked for.
@@ -292,7 +299,7 @@ export const copilotStore = createStore<CopilotState>((set, get) => ({
  */
 async function persist(credentials: StoredCredentials): Promise<void> {
     try {
-        await chrome.storage.local.set({ [STORAGE_KEY]: credentials });
+        await writeStored(STORAGE_KEY, credentials);
     } catch {
         // Non-fatal: the session keeps working, the key just won't survive a
         // reload. Silent because the alternative is an error toast on every

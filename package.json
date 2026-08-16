@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
+    "build:web": "vite build --mode web && node scripts/flatten-html.mjs",
     "typecheck": "tsc --noEmit"
   },
   "keywords": [],

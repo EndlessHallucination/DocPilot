@@ -238,6 +238,13 @@ export function CopilotPanel({
                         : status === "done"
                             ? `Read page ${pageNumber} again`
                             : "What should I fill in?"}
+
+                    {status === "idle" && (
+                        <p className="mt-2 text-xs text-gray-500">
+                            Needs your own API key. Everything else — reading the form,
+                            placing text, signing and exporting — works without one.
+                        </p>
+                    )}
                 </button>
 
                 {/* ─── THE WAITING STATE (§15.4) ─────────────────────────────

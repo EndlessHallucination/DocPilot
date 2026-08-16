@@ -46,7 +46,7 @@
 
 import { useEffect, useState } from "react";
 import { copilotStore, useCopilotStore, PROVIDERS } from "./copilotStore";
-
+import { STORAGE_DESCRIPTION } from "./storage";
 export function ContextForm() {
     const provider = useCopilotStore((s) => s.provider);
     const apiKey = useCopilotStore((s) => s.apiKey);
@@ -165,9 +165,9 @@ export function ContextForm() {
                     claiming otherwise is the kind of thing that unravels in a
                     demo Q&A. */}
                 <span className="text-xs text-gray-500">
-                    Stored locally in this browser and sent only to {active.label}.
-                    Your document is never uploaded. Not encrypted — avoid using
-                    this on a shared computer.
+                    {STORAGE_DESCRIPTION} Sent only to {active.label}. Your document
+                    is never uploaded. Not encrypted — avoid using this on a shared
+                    computer.
                 </span>
 
                 {apiKey && (
