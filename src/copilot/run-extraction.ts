@@ -42,6 +42,8 @@ import type { PDFDocumentProxy } from "pdfjs-dist";
 import { extractPageText, type ExtractedPage } from "./extract-text";
 import { extractDocumentGeometry, type DocumentGeometry } from "./extract-geometry";
 import { detectFields, type DetectionResult } from "./detect-field";
+import { smokeReport } from "./smoke";
+import { COPILOT_DEV } from "./dev";
 
 export interface Extraction {
     pages: ExtractedPage[];
@@ -85,13 +87,21 @@ export async function runExtraction(
         // §8.6 gets recreated in a new form. Leaving the parsed fonts cached
         // also means the first render is faster, not slower.
 
-        return {
+        const result: Extraction = {
             pages,
             geometry,
             detection: detectFields(pages, geometry),
             geometryOk: geometry.ok,
             readable: pages.some((p) => p.quality === "ok"),
         };
+
+        // ⚠ COPILOT_DEV, not import.meta.env.DEV. Vite strips the latter at
+        // compile time, so in the unpacked build this call simply did not
+        // exist — which is indistinguishable from smokeReport being broken,
+        // and cost a session to work out (§8.38).
+        if (COPILOT_DEV) smokeReport(result);
+
+        return result;
     } catch (error) {
         // Deliberately swallowed. A copilot that can't read the document is a
         // degraded feature; a viewer that won't open the document is a broken

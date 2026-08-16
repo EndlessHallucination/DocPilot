@@ -44,7 +44,7 @@ export function verifyExtraction(extraction: Extraction | null): void {
         return;
     }
 
-    const { pages, geometry, detection } = extraction;
+    const { pages, geometry } = extraction;
     const actual: Record<string, string> = {};
 
     actual["Pages"] = String(pages.length);
@@ -96,23 +96,6 @@ export function verifyExtraction(extraction: Extraction | null): void {
     }
 
     console.table(rows);
-
-    // Not asserted, because they have no single right answer to compare
-    // against — but worth eyeballing once. Nearest-line-above gets the page 2
-    // labels wrong three times out of three (§8.9), and that shows up here as
-    // signature text where a field name should be.
-    const combLabels = detection.payload
-        .flatMap((line) => line.fields ?? [])
-        .filter((field) => field.kind === "cells")
-        .map((field) => field.label);
-
-    console.log("[verify] comb labels resolved:", combLabels);
-    console.log("[verify] flagged words:", [...flagged.keys()]);
-    console.log(
-        `[verify] payload lines: ${detection.payload.length}, ` +
-        `tagged: ${detection.payload.filter((l) => l.fields).length}, ` +
-        `geometry entries: ${detection.geometry.size}`,
-    );
 
     if (failures > 0) {
         console.error(

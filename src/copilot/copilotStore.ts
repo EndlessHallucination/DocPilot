@@ -21,6 +21,7 @@ import { createStore } from "zustand/vanilla";
 import { useStore } from "zustand";
 import { getFieldClassifications, type FieldClassification } from "./classify";
 import { askQuestion, type AskTurn } from "./ask";
+import { COPILOT_DEV } from "./dev";
 import type { PayloadLine } from "./detect-field";
 
 export type Provider = "anthropic" | "openai" | "groq";
@@ -127,12 +128,20 @@ export const copilotStore = createStore<CopilotState>((set, get) => ({
             return;
         }
 
+        if (COPILOT_DEV) {
+            const withRef = result.classifications.filter((c) => c.ref);
+            console.log(
+                `[copilot] ${result.classifications.length} verdicts, ${withRef.length} with a ref:`,
+                result.classifications,
+            );
+        }
         set({
-            classifications: new Map(result.classifications.map((c) => [c.id, c])),
+            classifications: new Map(result.classifications.map((c) => [c.ref ?? c.id, c])),
             status: "done",
             error: null,
         });
     },
+
 
     /**
      * Ask one follow-up question (§9.7).
@@ -273,6 +282,7 @@ export const copilotStore = createStore<CopilotState>((set, get) => ({
         }
     },
 }));
+
 
 /**
  * ⚠ TAKES StoredCredentials, NOT A PARTIAL STATE. That signature is the only

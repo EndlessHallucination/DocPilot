@@ -10,6 +10,10 @@ import { useEffect, useRef, useState } from "react";
 import type { PDFDocumentProxy, PDFPageProxy, PageViewport } from "pdfjs-dist";
 import { PdfTextLayer } from "./PdfTextLayer";
 import { AnnotationLayer } from "./AnnotationLayer";
+import { GeometryOverlay } from "./GeometryOverlay";
+import type { DetectionResult } from "../copilot/detect-field";
+import { VerdictMarkers } from "./VerdictMarkers";
+import type { FieldClassification } from "../copilot/classify";
 
 type RenderTask = ReturnType<PDFPageProxy["render"]>;
 
@@ -17,13 +21,18 @@ interface PdfPageProps {
     doc: PDFDocumentProxy;
     pageNumber: number;
     scale: number;
+    /** Dev overlay only. Null when the document couldn't be read. */
+    detection: DetectionResult | null;
+    classifications: Map<string, FieldClassification>;
+    focusedLineId?: string | null;
 }
 
 function isCancelled(err: unknown): boolean {
     return err instanceof Error && err.name === "RenderingCancelledException";
 }
 
-export function PdfPage({ doc, pageNumber, scale }: PdfPageProps) {
+export function PdfPage({ doc, pageNumber, scale, detection, classifications, focusedLineId }: PdfPageProps) {
+
     const canvasRef = useRef<HTMLCanvasElement>(null);
 
     const renderTaskRef = useRef<RenderTask | null>(null);
@@ -34,7 +43,6 @@ export function PdfPage({ doc, pageNumber, scale }: PdfPageProps) {
      */
     const [cssViewport, setCssViewport] = useState<PageViewport | null>(null);
     const [error, setError] = useState<string | null>(null);
-
     useEffect(() => {
         let cancelled = false;
 
@@ -113,12 +121,32 @@ export function PdfPage({ doc, pageNumber, scale }: PdfPageProps) {
             <canvas ref={canvasRef} className="block h-full w-full" />
             <PdfTextLayer doc={doc} pageNumber={pageNumber} scale={scale} />
 
+            {cssViewport && (
+                <GeometryOverlay
+                    pageNumber={pageNumber}
+                    viewport={cssViewport}
+                    detection={detection}
+                />
+            )}
+
+            {cssViewport && (
+                <VerdictMarkers
+                    pageNumber={pageNumber}
+                    viewport={cssViewport}
+                    detection={detection}
+                    classifications={classifications}
+                    focusedLineId={focusedLineId}
+
+                />
+            )}
+
             {/* Last child = on top. Guarded rather than made null-tolerant:
                 there's nothing sensible to render without a viewport, and
                 every coordinate call downstream would need its own check. */}
             {cssViewport && (
                 <AnnotationLayer pageNumber={pageNumber} viewport={cssViewport} />
             )}
+
 
             {error && (
                 <div className="absolute inset-0 flex items-center justify-center bg-white/90 p-8 text-center text-sm text-red-600">

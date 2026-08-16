@@ -6,7 +6,8 @@ import { useAnnotationStore } from "./useAnnotationStore";
 import { runExtraction, type Extraction } from "../copilot/run-extraction";
 import { verifyExtraction } from "../copilot/verify";
 import { CopilotPanel } from "../copilot/CopilotPanel";
-import { copilotStore } from "../copilot/copilotStore";
+import { copilotStore, useCopilotStore } from "../copilot/copilotStore";
+
 
 const MIN_ZOOM = 50;
 const MAX_ZOOM = 300;
@@ -15,6 +16,19 @@ const ZOOM_STEP = 10;
 export function App() {
     const [pdf, setPdf] = useState<LoadedPdf | null>(null);
     const [pageNumber, setPageNumber] = useState(1);
+    /**
+     * Which line the panel last pointed at, or null.
+     *
+     * A LINE id (`p1l14`), never a ref — a panel row is a line. Lives here
+     * rather than in copilotStore because it is view state about where the
+     * user is looking, not a result: it must survive a failed classification
+     * and must NOT be reset by resetResults, which clears answers.
+     *
+     * ⚠ Line ids are array positions and shift on every re-extraction (§8.14),
+     * so this is cleared in openFile alongside the extraction itself. A stale
+     * id would band a completely unrelated line on the new document.
+     */
+    const [focusedLineId, setFocusedLineId] = useState<string | null>(null);
     const [zoomPercent, setZoomPercent] = useState(120);
     const [error, setError] = useState<string | null>(null);
     const [extraction, setExtraction] = useState<Extraction | null>(null);
@@ -23,6 +37,7 @@ export function App() {
 
     const dirty = useAnnotationStore((s) => s.dirty);
     const annotationCount = useAnnotationStore((s) => s.annotations.length);
+    const classifications = useCopilotStore((s) => s.classifications);
 
     /**
  * Warn before losing work. Nothing persists — annotations are in-memory for
@@ -49,6 +64,7 @@ export function App() {
     async function openFile(file: File) {
         setError(null);
         setExtraction(null);          // clear before, so a failed open can't leave stale fields on screen
+        setFocusedLineId(null);       // §8.14 — ids are array positions and do not survive a re-extraction
         copilotStore.getState().resetResults();
         try {
             const buffer = await file.arrayBuffer();
@@ -209,14 +225,38 @@ export function App() {
 
             <Toolbar pdf={pdf} />
 
-            <section className="flex flex-1 justify-center overflow-auto p-8">
-                <PdfPage doc={pdf.doc} pageNumber={pageNumber} scale={scale} />
+            {/* ⚠ THE PANEL IS A SIBLING OF THE SCROLL AREA, NOT A CHILD OF IT.
+                It used to sit inside the scrolling <section>, which made it a
+                flex item alongside the canvas — and with align-items: stretch
+                the flex line grows to the TALLEST item, so the aside stretched
+                toward the PDF page's height rather than the viewport's. At
+                120% zoom that squeezed the list to a couple of rows; past
+                ~150% the question box scrolls off the bottom of the document
+                and is unreachable.
+
+                overflow-hidden on the wrapper is what gives the aside a
+                definite height, which is what makes its own flex-1 + auto
+                list actually scroll. Removing it silently restores the bug. */}
+            <div className="flex flex-1 overflow-hidden">
+                <section className="flex flex-1 justify-center overflow-auto p-8">
+                    <PdfPage
+                        doc={pdf.doc}
+                        pageNumber={pageNumber}
+                        scale={scale}
+                        detection={extraction?.detection ?? null}
+                        classifications={classifications}
+                        focusedLineId={focusedLineId}
+                    />
+                </section>
+
                 <CopilotPanel
                     extraction={extraction}
                     pageNumber={pageNumber}
                     onSelectPage={setPageNumber}
+                    onFocusLine={setFocusedLineId}
+                    focusedLineId={focusedLineId}
                 />
-            </section>
+            </div>
         </main>
     );
 }

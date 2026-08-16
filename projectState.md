@@ -1,36 +1,42 @@
 # PDF Copilot — Project State & Session Handoff
 
 **Phase 1 (editor): COMPLETE and stable.**
-**Phase 2 (AI copilot): §9.3 AND §9.7 BOTH WORKING END TO END. Advice appears
-per field; the follow-up question box answers free-text questions and was
-tested five ways on the W-9. No markers on the page yet.**
+**Phase 2 (AI copilot): WORKING END TO END ON BOTH TEST DOCUMENTS, IN BOTH
+SCRIPTS.** Advice appears per field, markers render on the page at real
+coordinates, the follow-up question box answers free text. §9.3's language
+separation — the last correctness unknown — is VERIFIED on the Hebrew fixture.
 
-**START HERE NEXT SESSION: §14.** It has the running order, what to test, when,
-and how.
+**DEMO IS 19 AUGUST. Three working days: 16, 17, 18.**
 
-§9.4 is the only demo blocker and it has a PREREQUISITE — read §8.22 before
-writing marker code. §13 covers making this work on documents other than the
-two test files.
+**START HERE NEXT SESSION: §14.** It has the running order and the one bug that
+makes the screen look broken.
 
 Read §1–3 for what this is, §7 for verification status, §8 for findings that
-cost real time, §9 for what's left.
+cost real time, §9 for what's left, §15 for the demo-day plan.
 
-⚠ New this session: §8.20–§8.23. §8.22 is the one that changes the next
-session's plan — a single line can carry SEVERAL CHECKBOXES, and the code keeps
-only one.
+⚠ New this session: §8.24–§8.37, and they are unusually consequential.
+- **§8.20's ✅ was FALSE** and the smoke report caught it on its first run.
+- **§8.22 is FIXED** (run-keyed checkboxes) and confirmed on screen.
+- **§8.35 — a prompt rewrite fixed language drift AND under-classification.**
+  Position in the prompt mattered more than wording.
+- **§8.36 — the store silently collapsed multi-field verdicts** for as long as
+  classifications have existed. Third occurrence of the same line-vs-run bug.
+- **§9.4 SCOPE CUT: no click-to-prefill, deliberately.** See §9.4.
 
 ---
 
 ## 0. Status
 
-Phase 2 works end to end on two documents. Extraction is verified in-browser,
-both AI calls are built, and §9.7 was tested five ways on a live provider.
-Sections 9.1, 9.2, 9.3, 9.5 and 9.7 are done; 9.4 and 9.6 are not.
+Phase 2 works end to end on two documents in two scripts. Extraction is
+verified in-browser, both AI calls are built and tested live, markers render at
+verified coordinates, and Hebrew classification produces English reasons with
+Hebrew values.
 
-Roughly 85% of the way to a demo. What remains is one visual feature (§9.4),
-one optional one (§9.6), restyling the panel, rehearsal, and one unverified
-correctness property (§9.3's language separation, blocked on API credit rather
-than on code).
+**Demo-ready with one visible bug (§8.37, caption overflow) and three
+degradation checks outstanding.** What remains is polish, verification breadth,
+and rehearsal — not features.
+
+---
 
 ## 1. What this is
 
@@ -49,6 +55,11 @@ type into the PDF — working out yourself where each described field sits.
 This extension collapses that into one flow: the AI's answer and the place you
 act on it are the same interface, and the answer is tied to real coordinates
 instead of prose you have to translate.
+
+**Note the boundary, and state it in the demo (§9.4):** the copilot tells you
+what belongs in each field and marks where it goes. It does not type for you.
+Those are different claims, and the second one is not needed for the first to
+be useful.
 
 ## 3. Core architecture decisions
 
@@ -72,11 +83,11 @@ interactive fields via pdf.js's AnnotationLayer. (Note: the Harel fixture has
 `Form: none`. The W-9 test document also has no AcroForm. Phase 3 still has no
 target document.)
 
-### 3.1 Discovery is text-driven, geometry only enriches ✅ VALIDATED THREE TIMES
+### 3.1 Discovery is text-driven, geometry only enriches ✅ VALIDATED FOUR TIMES
 
 The original plan made blank detection a **gate**: find the blank
-geometrically, then ask the model about it. That is wrong, and three
-independent results now disprove it.
+geometrically, then ask the model about it. That is wrong, and four independent
+results now disprove it.
 
 **Harel:** section ב has NINE eligibility clauses and only EIGHT checkboxes
 (the clause beginning `התחלתי לעבוד במקום חדש` has no box drawn; confirmed by
@@ -88,14 +99,22 @@ checkboxes and nothing else on a form that is mostly write-in fields. Line 1,
 model returned "fill in" for it anyway.** Under the gated design the entire
 form would have come back nearly empty.
 
-**W-9, second session — the strongest one.** On page 1 the reading order is
-visibly scrambled by column interleaving (§8.21), five checkboxes collapse into
-a single line with one rect (§8.22), and the masthead is mistagged as a
-write-in. **The copilot still returned correct, specific advice for every real
-field, and correct reasons for every skip.** Discovery survived three
-simultaneous geometry and ordering defects.
+**W-9, second session.** On page 1 the reading order is visibly scrambled by
+column interleaving (§8.21), five checkboxes collapse into a single line with
+one rect (§8.22), and the masthead is mistagged as a write-in. **The copilot
+still returned correct, specific advice for every real field.** Discovery
+survived three simultaneous geometry and ordering defects.
 
-Say this out loud in the demo. It is the reason the risky parts are deletable.
+**Harel, the untagged clause — DIRECTLY DEMONSTRATED (§8.33).** With context
+"started a new job in June 2026", the model's reason for a DIFFERENT clause
+reads: *"Gap between jobs was only about 3 months, not 6+ continuous months as
+required."* It read `התחלתי לעבוד במקום חדש` — the clause with no checkbox
+drawn beside it — understood it, and used it to reject a neighbouring clause's
+condition. **A geometry-gated design never puts that line in front of the
+model, so that reasoning could not happen at all.**
+
+That fourth one is the demo line. It is no longer an argument about what the
+architecture permits; it is a transcript of the architecture paying off.
 
 **So: the model sees the whole document text and decides what the fields are.**
 Geometry answers only "where exactly does a mark go, and how much room is
@@ -109,12 +128,17 @@ Preserve that property. It is the reason the risky parts are deletable.
 - **Coordinates never go.** `classify.ts`'s `projectLines` re-projects each
   line field by field rather than spreading it, so a coordinate added to
   `PayloadLine` later cannot silently start being uploaded.
-  ⚠ **`projectLines` is now shared with `ask.ts`** and is the ONLY
-  serialisation of document data in the codebase. One function, one audit. Do
-  not write a second one.
-- **Cell counts DO go**, because they change the answer. "Nine cells, one
-  character each" produces nine digits. A six-cell date wants DDMMYY, an
-  eight-cell one wants DDMMYYYY.
+  ⚠ **`projectLines` is shared with `ask.ts`** and is the ONLY serialisation of
+  document data in the codebase. One function, one audit. Do not write a
+  second one.
+- **Cell counts DO go**, because they change the answer. ✅ **CONFIRMED LIVE
+  (§8.32):** a six-cell date returned `120385` (DDMMYY, not DDMMYYYY) and a
+  nine-cell ID returned `039274865`. This was a design argument for two
+  sessions and is now a measured result.
+- **Field refs DO go**, added this session (§8.27). A ref is `"p1l17f0"` — a
+  line index and a field index. No coordinate and nothing derived from one; the
+  payload already states a field was detected on that line, and the ref only
+  numbers them. Added deliberately, not by a spread.
 - **Absence is NEVER asserted.** A line carries a tag or carries nothing, and
   nothing means _unknown_. The system prompt states this explicitly as rule 2,
   and the W-9 result above is that rule paying off.
@@ -136,6 +160,8 @@ are the most personal things in the app.
   off disk. Widening it breaks the privacy claim and nothing would flag it.
 - **Never log the API key**, including `console.log` while debugging. No file
   in `copilot/` logs it, including error paths. Keep it that way.
+  ⚠ Several diagnostic logs were added this session (§8.38) — none touches the
+  key, and none should.
 - **Minimal `host_permissions`**: the three provider APIs and nothing else.
 - `web_accessible_resources` was REMOVED — extension pages are same-origin with
   their own resources, so `chrome.runtime.getURL()` needs no declaration.
@@ -155,11 +181,13 @@ src/
     App.tsx               session state, file intake, beforeunload guard,
                           extraction wiring, panel layout
     pdf-setup.ts          worker + cmap wiring, loadPdf()
-    PdfPage.tsx           canvas render, owns the page wrapper
+    PdfPage.tsx           canvas render, owns the page wrapper, mounts overlays
     PdfTextLayer.tsx      selectable transparent text overlay
     coordinates.ts        the ONLY place points and pixels convert
     useAnnotationStore.ts React binding for the vanilla store
     AnnotationLayer.tsx   overlay: placement, keyboard, deselect
+    GeometryOverlay.tsx   NEW — dev-only rect visualiser, `g` toggles
+    VerdictMarkers.tsx    NEW — §9.4, green markers on "fill" verdicts
     TextAnnotation.tsx / SymbolAnnotation.tsx / SignatureAnnotation.tsx
     SignaturePad.tsx      modal drawing canvas
     Toolbar.tsx
@@ -174,12 +202,14 @@ PDF, Hebrew and English both correct), unsaved-changes warning.
 
 **Known drift, deliberately deferred:** annotation components live in
 `viewer/`, not `editor/` as originally planned. Left unresolved. Phase 2 lives
-in `copilot/` so it doesn't have to pick a side.
+in `copilot/` so it doesn't have to pick a side. The two new overlays are in
+`viewer/` because they mount inside `PdfPage` and import `coordinates.ts`.
 
 ### 5.1 Invariants that must not be broken
 
 **Geometry is PDF points**, y = bottom edge, origin bottom-left. Screen pixels
 never enter the store. `coordinates.ts` is the only place the two systems meet.
+Both new overlays go through `pdfRectToCss` and do no arithmetic of their own.
 
 **Text is stored in logical order**, exactly as typed. Visual reordering
 happens once, in the export path.
@@ -193,6 +223,11 @@ Backspace delete the box you're typing in.
 
 **`state/` stays free of DOM and React imports** so the background worker can
 import it. `copilot/` is NOT bound by this — nothing in the worker needs it.
+
+**Layer order in `PdfPage`, bottom to top:** canvas → `PdfTextLayer` →
+`GeometryOverlay` → `VerdictMarkers` → `AnnotationLayer`. AnnotationLayer must
+stay LAST. Both new overlays are `pointerEvents: "none"` throughout, which is
+what lets AnnotationLayer keep the transparency behaviour §6.10 depends on.
 
 ---
 
@@ -215,6 +250,10 @@ cruft. The comment is what saves it.
 
 **Test:** export `חשבון 935921908 בבנק HSBC`, open in **Adobe Reader** (not
 Chrome), confirm digits read left-to-right in order. Pure Hebrew proves nothing.
+
+⚠ **This matters more now than it did.** The copilot returns
+`039274865` as a value the user will type into the form. If export reverses it,
+the demo produces a wrong ID number on a real document.
 
 ### 6.2 RTL export alignment
 
@@ -253,8 +292,10 @@ line — and each masks the next. Read before touching `TextAnnotation.tsx`.
 Also: the wrapper `<div>` needs an explicit height, and `rows={1}` on the
 textarea (the default of 2 fights the measurement).
 
-⚠ §9.4 will mount a text box with content already in it — a path that has never
-executed. This section is the first place to look when it breaks.
+✅ **NO LONGER A §9.4 RISK.** The old warning here said §9.4 would mount a text
+box with content already in it — a path that has never executed. **Click-to-
+prefill was cut (§9.4), so that path still never executes.** This section is
+back to being Phase 1 history rather than a live hazard.
 
 ### 6.5 pdf-lib anchoring differs per primitive
 
@@ -326,13 +367,18 @@ deselects whatever annotation the user is holding. Every early-return branch in
 fires before an open textarea's blur, so the new box's `editingId` gets cleared
 by the old box's blur. Individual annotations still use pointerdown for drag.
 
-⚠ **OPEN, one look to settle:** if `AnnotationLayer` binds Delete/Backspace at
-DOCUMENT level rather than on the layer element, typing in the question box or
-the API key field will delete the selected annotation. `ContextForm` has had
-this exposure all along, so it may already be fine. The fix if it bites is a
-target check in the layer's handler, NOT `stopPropagation` on each input —
-that patches one field and leaves the next one broken. TODO is in
-`CopilotPanel.tsx` on the textarea.
+⚠ **`GeometryOverlay` and `VerdictMarkers` are `pointerEvents: "none"` and
+nothing inside re-enables it.** That is why they need no `data-editor-chrome`.
+**If a marker ever becomes clickable, it needs the attribute** or clicking it
+will deselect the user's annotation through the document-level listener.
+
+⚠ **STILL OPEN, one look to settle:** if `AnnotationLayer` binds
+Delete/Backspace at DOCUMENT level rather than on the layer element, typing in
+the question box or the API key field will delete the selected annotation.
+`GeometryOverlay`'s `g` handler has the same exposure and carries the same
+input guard as a precaution. `ContextForm` has had this exposure all along, so
+it may already be fine. The fix if it bites is a target check in the layer's
+handler, NOT `stopPropagation` on each input.
 
 ### 6.11 Text runs are fragmented — but much less so on pdf.js v6
 
@@ -341,6 +387,10 @@ merges adjacent runs**: page 1 of the fixture yields 138 items where v4 yielded
 204, and whole Hebrew sentences arrive intact.
 
 ⚠ This is why items-per-line is a bad proxy for anything — see §8.15.
+
+⚠ **Merging is NOT uniform.** W-9 line 3b extracts as 19 runs because each dot
+of a leader is its own item (§8.24). Do not assume a line is one run, and do
+not assume a visually contiguous string is one run.
 
 ### 6.12 Page-at-a-time, no continuous scroll
 
@@ -351,30 +401,32 @@ coordinates either way. It affects _discoverability_.
 per line (label, verdict, tags, page number); clicking sets `pageNumber`.
 ✅ Built.
 
-**Scanned / image-only PDFs are editor-only, no copilot.** The editor never
-needed text — canvas rendering works, and placing a box is pure coordinate
-work. `run-extraction.ts` returns `readable: false` and the panel says so
-plainly. **Still untested against a real scan — verify.**
+**Scanned / image-only PDFs are editor-only, no copilot.** `run-extraction.ts`
+returns `readable: false` and the panel says so plainly. **STILL UNTESTED
+against a real scan — §14 Step 2 does it.**
 
 ---
 
 ## 7. Phase 2 — what exists NOW
 
-### 7.1 Files in `copilot/`
+### 7.1 Files in `copilot/` and the new viewer overlays
 
-| File                  | Role                                                                                          |
-| --------------------- | --------------------------------------------------------------------------------------------- |
-| `extract-text.ts`     | page → ordered lines, logical order, PDF points, readability flags                            |
-| `extract-geometry.ts` | operator list → checkboxes, combs, dashed leaders. Document-level. Never throws.              |
-| `detect-field.ts`     | joins the two; emits model payload (no coordinates) + client map (coordinates only)           |
-| `run-extraction.ts`   | orchestrates the three, owns the failure policy, returns one object                           |
-| `verify.ts`           | dev-only; asserts the §7.2 table against the Harel baseline                                   |
-| `provider.ts`         | **NEW.** The ONE place that talks to a provider. Config, both request shapes, timeout, errors |
-| `classify.ts`         | §9.3 — the classification task: prompt, `projectLines`, JSON parsing                          |
-| `ask.ts`              | **NEW.** §9.7 — the follow-up question task: prompt, history flattening, prose out            |
-| `copilotStore.ts`     | provider, key, context answers, classifications, ask thread                                   |
-| `ContextForm.tsx`     | provider dropdown, masked key field, two free-text questions                                  |
-| `CopilotPanel.tsx`    | the field list, verdicts, degraded-state notices, `AskBox`                                    |
+| File                       | Role                                                                                          |
+| -------------------------- | --------------------------------------------------------------------------------------------- |
+| `extract-text.ts`          | page → ordered lines, logical order, PDF points, readability flags                            |
+| `extract-geometry.ts`      | operator list → checkboxes, combs, dashed leaders. Document-level. Never throws.               |
+| `detect-field.ts`          | joins the two; emits model payload (no coordinates) + client map (coordinates only)            |
+| `run-extraction.ts`        | orchestrates the three, owns the failure policy, returns one object, calls `smokeReport`       |
+| `verify.ts`                | dev-only; asserts the §7.2 table against the Harel baseline                                    |
+| `smoke.ts`                 | **NEW.** Generic extraction report for ANY document. No assertions. §13.3                      |
+| `provider.ts`              | the ONE place that talks to a provider. Config, both request shapes, timeout, errors           |
+| `classify.ts`              | §9.3 — the classification task: prompt, `projectLines`, JSON parsing, ref validation           |
+| `ask.ts`                   | §9.7 — the follow-up question task: prompt, history flattening, prose out                      |
+| `copilotStore.ts`          | provider, key, context answers, classifications, ask thread                                    |
+| `ContextForm.tsx`          | provider dropdown, masked key field, two free-text questions                                   |
+| `CopilotPanel.tsx`         | the field list, verdicts, degraded-state notices, classify button, `AskBox`                    |
+| `viewer/GeometryOverlay.tsx` | **NEW.** Dev-only. Draws every rect in the geometry map, coloured by `source`. `g` cycles.   |
+| `viewer/VerdictMarkers.tsx`  | **NEW.** §9.4. Green markers on `fill` verdicts only. Read-only.                             |
 
 ⚠ **The file is `detect-field.ts`, singular.** Every import says so; only stale
 comments said `detect-fields.ts`. Don't grep for the plural.
@@ -398,23 +450,39 @@ Node baseline exactly.
 | Tagged lines               | 35 of 124                                   | ✅     |
 
 ⚠ `verify.ts` hardcodes these numbers and is meaningless on any other document.
-It is gated on the filename containing the fixture's name — without that gate
-it reports seven failures on every other PDF you open.
+It is gated on the filename containing the fixture's name.
 
-**W-9 baseline (2-page trimmed copy, this session):**
-page 1 = 89 lines / 12 tagged; page 2 = 139 lines / 1 tagged; checkbox
-histogram 8.0pt × 8; zero "text unclear" badges, i.e. §8.16's gate correctly
-suppressed the corruption rule on a ~100% Latin document.
+**W-9 baseline (2-page trimmed copy), via `smoke.ts`:**
 
-### 7.3 The LTR code path — PARTIALLY validated
+```
+2 pages · 228 lines · 13 tagged
+page 1 = 89 lines / 12 tagged / 18 fields
+page 2 = 139 lines /  1 tagged /  1 field
+mark sources (tagged): checkbox: 8, gap: 11      <- was checkbox: 4 before §8.22
+per-line fallback: 228
+checkbox size: 8.0pt × 8 matched
+mark offset: 5.60pt (calibrated)
+corruption check: suppressed · latin 100.0% (gate 15.0%)
+geometryOk: true · readable: true
+```
 
-Checkbox detection runs correctly LTR: the W-9 yields 8.0pt × 8, matching its
-seven classification boxes plus 3b. `literalBlanks` has now fired for the first
-time (§8.20).
+⚠ **`fields` rose 14 → 18 on page 1 when §8.22 was fixed**, while `tagged`
+stayed at 12 — the four recovered boxes are all on line 3a. That gap between
+`tagged` and `fields` is the fastest way to see multi-field lines exist.
 
-**Still unvalidated:** `edgeDistance`'s LTR branch and `offsetMark`'s LTR
-branch have never been checked against a rendered position, because markers
-don't exist yet (§9.4).
+### 7.3 ✅ BOTH SCRIPTS VALIDATED AGAINST A RENDERED POSITION
+
+Previously this section warned that `edgeDistance` and `offsetMark` had never
+been checked against anything drawn on screen. `GeometryOverlay` (§8.25) closed
+that in both directions:
+
+- **LTR — W-9.** All five checkbox rects on line 3a land exactly on the five
+  printed boxes. `gap` rects land in the blank areas.
+- **RTL — Harel.** Marks sit on the correct side (right of the label), and
+  coverage is visibly denser than the W-9's, as expected from 20 checkboxes,
+  12 leaders and 5 combs against 8 boxes and no rectangles.
+
+`markOffset` is 5.60pt on the W-9 and no longer an unfalsifiable number.
 
 ---
 
@@ -423,10 +491,8 @@ don't exist yet (§9.4).
 ### 8.1 Lines come from `hasEOL`, not from y-coordinates ⚠
 
 pdf.js emits a zero-width item with `str === ""` carrying `hasEOL` at the end
-of every line: 50 / 47 / 23 across the pages, accounting for every `hasEOL` in
-the document except one (the two-line title, which ends on real text).
-**These items ARE the line breaks.** Filtering them before grouping throws away
-the line structure.
+of every line: 50 / 47 / 23 across the pages. **These items ARE the line
+breaks.** Filtering them before grouping throws away the line structure.
 
 Splitting on `hasEOL` beats y-clustering, measurably:
 
@@ -565,11 +631,13 @@ dash-runs in its text**, on any page. Its blanks are whitespace runs followed
 by a 48–105pt positional jump (against sub-1pt between words), and its dotted
 leaders are vector strokes.
 
-✅ **The literal-run signal is implemented** (`literalBlanks` in
-`detect-field.ts`): `_(?:\s?_){2,}`, `\.(?:\s?\.){4,}`, `-(?:\s?-){3,}`.
-Thresholds differ per character and are set by what they must NOT match —
-`...` ellipsis, `1.1.2008`, `co-op`, `well-known`. Verified zero matches across
-all three Harel pages. ✅ **Now fired for real — see §8.20.**
+The literal-run signal is implemented (`literalBlanks` in `detect-field.ts`):
+`_(?:\s?_){2,}`, `\.(?:\s?\.){4,}`, `-(?:\s?-){3,}`. Thresholds differ per
+character and are set by what they must NOT match — `...` ellipsis, `1.1.2008`,
+`co-op`, `well-known`.
+
+⚠ **IT HAS NEVER MATCHED ANYTHING, ON ANY DOCUMENT. See §8.24.** The thresholds
+are right; the granularity is wrong.
 
 Gap threshold is one em of the adjacent text, not a constant.
 
@@ -577,13 +645,9 @@ Gap threshold is one em of the adjacent text, not a constant.
 51.7pt gap and gets a `writeIn` tag. Real blanks measure 74–261pt, so
 separating them needs a hardcoded number — which this codebase avoids. Tags
 enrich and never gate, so the model reads the line and correctly calls it
-prose. **Do not "fix" this with a constant.** The W-9's masthead
-(`Department of the Treasury / Internal Revenue Service / Go to www.irs.gov…`)
-produces the identical false positive for the identical reason — a genuine
-multi-column gap — and the model correctly ignored it there too.
-
-**Cross-check worth keeping:** page 1's leaders sit at y = 613, 450, 181, 139 —
-exactly the baselines where text-gap analysis independently finds blanks.
+prose. **Do not "fix" this with a constant.** The W-9's masthead produces the
+identical false positive for the identical reason and the model correctly
+ignored it there too.
 
 ### 8.9 Matching shapes to lines
 
@@ -600,28 +664,41 @@ layouts: **walk upward and take the first line containing a run that
 horizontally OVERLAPS the comb.** Nearest-above gets page 2 wrong three times
 out of three.
 
-⚠ **`matchCheckboxes` keeps only ONE box per line — NO LONGER INVISIBLE.**
-See §8.22. This is now a §9.4 prerequisite, not a deferred nicety.
+✅ **`matchCheckboxes` is now run-keyed — FIXED, see §8.22.** It returns
+`Map<Line, CheckboxMatch[]>` and appends; each box carries its own label run.
 
 ### 8.10 Calibrated mark offset
 
 Checkboxes sit a stable distance from their line's text edge: median 2.75 /
-2.44 / 2.75 across the three Harel pages. Learn it from the boxes that exist,
-then apply it to lines where **no box was drawn** — so the `התחלתי לעבוד`
-clause gets its mark exactly where a box would have been.
+2.44 / 2.75 across the three Harel pages, 5.60 on the W-9. Learn it from the
+boxes that exist, then apply it to lines where **no box was drawn** — so the
+`התחלתי לעבוד` clause gets its mark exactly where a box would have been.
 
-`markOffset` is exposed on `DetectionResult`.
+`markOffset` is exposed on `DetectionResult` and printed by `smoke.ts`.
 
-### 8.11 ⚠ RTL cell order — most likely place to produce a silent wrong value
+⚠ **It now measures to each box's OWN LABEL RUN**, not to the line edge, with
+the line edge as fallback for unlabelled boxes (`labelOffset`). This had to
+change in the same edit as §8.22: `line.minX` is the leftmost point of the
+WHOLE line, so on a line carrying five options, boxes 2–5 would each report a
+large negative offset and drag the median. While one box per line survived, the
+two measurements were identical. They are not any more.
+
+### 8.11 ⚠ RTL cell order — SEEN, and now defused
 
 `cellRects` indexes cells **left to right, geometrically**. On a Hebrew form the
 first character of an ID belongs in the **rightmost** cell, so a 9-digit ID
-fills index 8 down to 0. Filling 0 upward writes the number **mirrored** — and
-it looks entirely plausible on screen. Only obvious once printed.
+fills index 8 down to 0. Filling 0 upward writes the number **mirrored**.
 
-**Still unexercised** — nothing writes into cells yet. This lands in §9.4.
+✅ **CONFIRMED VISUALLY** via `GeometryOverlay`, which numbers each cell: on
+Harel's 9-cell `מס' הזהות` comb, cell 0 is leftmost and therefore holds the
+LAST digit.
 
-### 8.12 ⚠ A line can carry SEVERAL fields
+✅ **AND NO LONGER A RISK.** Click-to-prefill was cut (§9.4), so nothing writes
+into cells programmatically. The user reads `039274865` off the marker and
+types it themselves, right-to-left, as a person naturally does. **If prefill is
+ever revived, this is the first thing to get right.**
+
+### 8.12 ⚠ A line can carry SEVERAL fields — AND THIS BUG HAS THREE HEADS
 
 Page 1's עמית table puts four column labels on ONE line with a 6-cell comb and
 a 9-cell comb beneath it. Keying affordances by line kept the first and
@@ -631,21 +708,26 @@ Affordances belong to **runs**, not lines. `PayloadLine.fields` is an array,
 each entry carrying its own `ref`. `overlappingRun` returns the run rather than
 a boolean precisely so the two combs on one line can be told apart.
 
-`literalBlanks` follows the same rule — `Name: ____ Date: ____` emits two
-fields, not one.
-
 The `geometry` map is keyed by BOTH field ref and line id: refs give a detected
 shape's exact rect, line ids give the calibrated fallback.
 
-⚠ **THIS FIX WAS APPLIED TO COMBS ONLY.** Checkboxes and gap-blanks still key
-by line. §8.22 is that omission coming due.
+⚠⚠ **THE SAME BUG HAS NOW APPEARED THREE TIMES, IN THREE PLACES:**
+
+1. **Combs** — fixed here, §8.12.
+2. **Checkboxes** — `matchCheckboxes` kept one box per line. Fixed §8.22.
+3. **The store** — `classifications` was keyed by line id, collapsing several
+   verdicts on one line. Fixed §8.36.
+
+**RULE: when a line can carry several of something, check every map keyed by
+line id.** `hasWideGap` is the remaining one and is deliberately unfixed
+(§8.22).
 
 ### 8.13 Duplication to clean up
 
 `extract-geometry.ts` exports `combCellRect` (single rect) and
 `detect-field.ts` has a private `cellRects` (array) doing the same job.
 Nothing will flag it — an exported function is never "unused." Delete the
-export from `extract-geometry.ts`.
+export from `extract-geometry.ts`. **Still not done. Low priority.**
 
 ### 8.14 ⚠⚠ THE CONTENT STREAM IS NOT IN READING ORDER
 
@@ -656,20 +738,14 @@ fixture:
 - page 1 — section א (y 586), then ג (y 209), then ב (y 508)
 - page 2 — ה, ד, ו, ח, ט, ז
 
-Within a frame the lines are fine — only 5 of page 1's 52 break monotonic
-descent. Whole **blocks** arrive shuffled.
-
 **Fix: sort each page's lines by y descending.** Stable sort, so lines sharing
 a baseline keep stream order for free. Gets both Harel pages exactly right.
 
 ⚠ **FRAME GROUPING WAS TRIED AND FAILS — do not re-attempt.** Grouping
 consecutive lines while y descends, then sorting the groups, produces 6 groups
-on page 1 and 4 on page 2, none aligned to the real sections, because blocks
-chain into one another with no detectable boundary. Page 1 still came out
-א → ג → ב.
+on page 1 and 4 on page 2, none aligned to the real sections.
 
-⚠ **KNOWN LIMIT: two-column pages interleave.** Predicted here, now CONFIRMED
-on a real document — see §8.21.
+⚠ **KNOWN LIMIT: two-column pages interleave.** Confirmed — see §8.21.
 
 ⚠ **LINE IDS SHIFT.** Ids are array positions (`p1l15`), so they change on every
 re-extraction. Payload and geometry are built from the same array in one pass,
@@ -684,8 +760,7 @@ becomes a few enormous strings, and nothing looks broken.
 
 **Revision 1 — items-per-line ratio. WRONG, do not restore.** It FALSE-POSITIVED
 on ordinary documents: items-per-line measures how aggressively the producer
-merged runs, not correctness. Harel runs at 2.2–3.3 because v6 merges Hebrew
-heavily (§6.11); a dense English page merges far less and legitimately exceeds 8.
+merged runs, not correctness.
 
 **Revision 2** used the right measurement with `some()`, which failed a whole
 page on one odd group.
@@ -694,61 +769,43 @@ page on one odd group.
 a group's vertical spread against its own tallest glyph. Fall back only when
 more than **25%** of a page's groups exceed 3×.
 
-Scale separation makes the threshold uncritical: superscripts sit at 0.33×, a
-group holding a whole page sits at ~78×. Three orders of magnitude.
-
 **The clustering fallback, measured.** Forcing it on the fixture yields
 50 / 48 / 24 against the correct 52 / 48 / 24. The two merges are both the
 sidebar advert gluing onto body lines.
 
 ⚠ `משיכה חלקית` is a real field, and the merge extends its `line.maxX` across
-the advert. `edgeDistance` and the calibrated offset both measure from that
-edge, so **on the fallback path a checkbox mark for that line can land hundreds
-of points off.** If marks look wildly misplaced on a non-InDesign PDF, look here
-first.
+the advert. **On the fallback path a checkbox mark for that line can land
+hundreds of points off.** If marks look wildly misplaced on a non-InDesign PDF,
+look here first.
 
 ⚠ **STILL NEVER FIRED ON A GENUINELY BROKEN DOCUMENT.** Only via a forced
-threshold. The W-9 did NOT trigger it, which is itself useful — an IRS PDF is a
-non-InDesign producer and its `hasEOL` markers are sound.
-
-`ExtractedPage.lineSource` is `"eol" | "clustered"` and the panel says so.
+threshold. `smoke.ts` prints `lineSource` and warns loudly if it ever says
+`"clustered"` — that remains the single most valuable unclaimed result.
 
 ### 8.16 ⚠ The corruption rule must be gated by document script
 
 §8.4's rule flags lowercase-then-uppercase inside a word. On an English
 document it flagged `SaaS`, `JavaScript`, `TypeScript`, `PayPal`, `macOS`,
-`iPhone`, `PostgreSQL`, `YouTube` — 8 distinct, 22 occurrences, every one a
-false positive.
+`iPhone`, `PostgreSQL`, `YouTube` — 8 distinct, 22 occurrences, all false.
 
 **Gate: suppress the rule when Latin exceeds 15% of the document's letters.**
-Measured on Harel: 1.59% document-wide. An English document sits near 100%.
+Measured on Harel: 1.59% document-wide. The W-9 measures 100.0%.
 
-✅ **Re-confirmed on the W-9 this session:** zero "text unclear" badges across
-both pages of a ~100% Latin document.
+✅ Confirmed on the W-9: zero "text unclear" badges across both pages.
 
 **Placement matters.** `extract-text.ts` computes `suspectRanges`
 unconditionally and reports `letters: { latin, rtl }` per page;
 `detect-field.ts` decides whether to surface `unreliableText`.
 
 **Document-level, not per page**, so an English appendix inside a Hebrew form
-still gets checked.
-
-`DetectionResult.corruptionCheckApplied` exposes the decision.
+still gets checked. `smoke.ts` prints which side of the gate a document sits on.
 
 ### 8.17 ⚠⚠ US FORMS BUILD BOXES FROM UNCONNECTED STROKES
 
-Measured on the IRS W-9 (Rev. March 2024), page 1:
-
-```
-items=252  eol-empty=48  lines=89  shapes=30
-checkbox histogram: 8.0pt × 8      <- the 7 classification boxes + 3b
-large rectangles:   0
-```
-
-**Every shape is `cmds=2`** — one moveTo, one lineTo — with either zero width
-or zero height. The form contains **no rectangles at all**. The box around
-"1 Name of entity/individual" exists only visually, as four unrelated line
-segments meeting at corners.
+Measured on the IRS W-9 (Rev. March 2024), page 1: **every shape is `cmds=2`**
+— one moveTo, one lineTo — with either zero width or zero height. The form
+contains **no rectangles at all**. The box around "1 Name of entity/individual"
+exists only visually, as four unrelated line segments meeting at corners.
 
 Two completely different form idioms:
 
@@ -760,10 +817,9 @@ Two completely different form idioms:
 
 **And the copilot works anyway.** See §3.1.
 
-⚠ A rule-bounded-box detector is **optional**, affecting placement only. It is
-harder than it looks: the same "thin, long, horizontal stroke" is table
-furniture on Harel and a field boundary on the W-9. Distinguishing them
-probably needs the model, not more geometry.
+⚠ A rule-bounded-box detector is **optional**, affecting placement only.
+Distinguishing table furniture from a field boundary probably needs the model,
+not more geometry.
 
 ### 8.18 Groq free tier cannot fit a Hebrew document
 
@@ -773,74 +829,81 @@ character — giving **~7,700 input tokens, ~8,200 with the system prompt**.
 
 Groq's free tier caps `llama-3.3-70b-versatile` at **12,000 TPM**, and
 **counts `max_completion_tokens` toward the estimate before the request runs**.
-Actual response: `Limit 12000, Requested 13541` — note Groq's own estimator
-implies ~10,541 input, higher than our count.
+Actual response: `Limit 12000, Requested 13541`.
 
 `maxTokens` is per-provider in `PROVIDER_CONFIG`: 8000 for Anthropic and
 OpenAI, 3000 for Groq.
 
-⚠ **OPEN QUESTION, two minutes to settle:** `ask.ts` requests only 1,200
-output tokens, so a follow-up question MAY fit on Groq where classification
-cannot. The ask box does not depend on classification — open the Hebrew
-fixture, skip the classify button, ask one question. If it 413s, the body names
-both numbers; record them and close this. Not attempted yet.
+**Groq is for pipeline testing on Latin documents. Not for the Hebrew demo.**
 
-**Groq is for pipeline testing on Latin documents. Not for the Hebrew demo,**
-and not for judging output quality.
+⚠ The Groq-plus-Hebrew-ask question (does a 1,200-token ask fit where classify
+cannot?) is still unanswered and now low value — Anthropic credit exists and
+the demo runs on it.
 
 ### 8.19 Provider notes
 
 - **Anthropic requires `anthropic-dangerous-direct-browser-access: true`** for
   browser calls. Without it, CORS rejection looks like a network failure.
-- **Groq is OpenAI-compatible** — same request body, same response shape. Three
-  providers, two request shapes.
+- **Groq is OpenAI-compatible** — same request body, same response shape.
 - **`fetch` rejects with `TypeError` for both network failure and CORS.** On
   this extension that almost always means a missing `host_permissions` entry.
-  Chrome does not apply manifest permission changes on hot reload — reload the
-  extension.
-- Model names live in ONE place, `PROVIDER_CONFIG` (now in `provider.ts`). They
-  move; verify before a demo. Groq's catalogue rotates fastest.
+  Chrome does not apply manifest permission changes on hot reload.
+- Model names live in ONE place, `PROVIDER_CONFIG` in `provider.ts`. **VERIFY
+  BEFORE THE DEMO.** Currently `claude-sonnet-5` and confirmed working.
+- ⚠ **`stop_reason` is now logged** when it isn't `"end_turn"` (§8.38). Keep
+  it — silent truncation was invisible for three separate failures.
 
-### 8.20 ✅ `literalBlanks` FIRED FOR THE FIRST TIME — W-9, NEW
+### 8.20 ❌ CORRECTED — `literalBlanks` has NEVER fired, and could not have
 
-The dot-leader pattern `\.(?:\s?\.){4,}` matched line 3b's nine-dot run
-(`See instructions . . . . . . . . .`). The LLC line directly above it, with
-four dots, did not match.
+**The previous version of this section was WRONG and marked ✅.** It claimed the
+W-9's line 3b dot run matched `\.(?:\s?\.){4,}`. It did not.
 
-§8.8's thresholds were set entirely by what they must NOT match and had never
-been exercised on any document. This is the first document to exercise them,
-and the split fell where intended.
+Measured via `smoke.ts`'s mark-source histogram: `checkbox: 4, gap: 11`, **no
+`literal` entry at all**, on a document where 3b visibly carries nine dots.
 
-⚠ **Confirm the BADGE, not just the dots.** Dots appearing in extracted text is
-not evidence the pattern ran — the `writeIn` badge on that row is. Partially
-confirmed this session; finish the check next time the W-9 is open.
+**How the false ✅ survived a session:** both available observations — dots in
+the extracted text, and a `writeIn` badge on the row — were consistent with the
+claim, and neither could test it. §8.20 itself warned that the dots proved
+nothing. The badge turned out to be unattributable too, because `hasWideGap`
+emits the same `writeIn` tag. The badge on 3b was `gap`.
 
-### 8.21 ⚠ TWO-COLUMN PAGES DO INTERLEAVE — confirmed, NEW
+**Two lessons worth more than the finding:**
 
-§8.14 predicted this and accepted it as a known limit on the grounds that
-bureaucratic forms are single-column. **W-9 page 1 is not.** Line 4
-(Exemptions) sits in a right-hand column beside 3a and 3b, and the y-descending
-sort splices its lines between the left column's. The panel order is visibly
-wrong in that region.
+1. **A tag with no provenance cannot confirm the detector that produced it.**
+   Fixed by adding `MarkSource` to `FieldGeometry` — diagnostics only, on the
+   client-side type, never serialised.
+2. **The tool that prints numbers caught what a session of inspection missed.**
+   `smoke.ts` deleted a false ✅ on its first run.
 
-**Blast radius is smaller than it looks, and this was measured, not assumed:**
+Cause and fix: §8.24.
 
-- **Placement: UNAFFECTED.** Marker coordinates come from `detect-field.ts`'s
-  geometry map, never from list position.
-- **Panel readability: degraded** in that region only.
-- **Model context: degraded, and survivable.** The model still classified 3a
-  and 3b correctly, with correct reasons, on this exact page.
+### 8.21 ⚠ TWO-COLUMN PAGES DO INTERLEAVE — and it starts at line 0
 
-**Not fixable by §8.14's route** — frame grouping was tried and failed there,
-and that was a different problem (stream order, not columns). A real fix means
-clustering lines by x-extent into column bands and sorting within each band
-before merging. **Not committed:** it needs a rule for when a page IS
+W-9 page 1 is two-column. Line 4 (Exemptions) sits in a right-hand column
+beside 3a and 3b, and the y-descending sort splices its lines between the left
+column's.
+
+⚠ **EXTENDED: the interleaving starts at line 0, not at line 40.** Page 1's
+first three lines read `Request for Taxpayer` / `Give form to the` /
+`Form(Rev. March 2024) W-9` — the masthead's three layout blocks arriving
+shuffled, and the form number is itself three runs joined in the wrong order.
+
+**Blast radius, measured not assumed:**
+
+- **Placement: UNAFFECTED.** Marker coordinates come from the geometry map,
+  never from list position.
+- **Panel readability: degraded** in those regions.
+- **Model context: degraded, and survivable.** The model classified 3a and 3b
+  correctly on this exact page.
+
+**Not fixable by §8.14's route.** A real fix means clustering lines by x-extent
+into column bands. **Not committed:** it needs a rule for when a page IS
 two-column, and getting that wrong scrambles a single-column form, which is the
 common case. `page.getStructTree()` remains the correct answer for tagged PDFs.
 
 Deferred. See §9.9.
 
-### 8.22 ⚠⚠ SEVERAL CHECKBOXES ON ONE LINE — §9.4 PREREQUISITE, NEW
+### 8.22 ✅ FIXED — several checkboxes on one line
 
 W-9 line 3a extracts as a SINGLE line carrying five options:
 
@@ -848,59 +911,343 @@ W-9 line 3a extracts as a SINGLE line carrying five options:
 Individual/sole proprietor   C corporation   S corporation   Partnership   Trust/estate
 ```
 
-Five drawn checkboxes, one extracted line. Two detectors collapse it, both for
-the same reason — **they key by line, not by run**:
+Five drawn checkboxes, one extracted line. `matchCheckboxes` kept **one box per
+line**, so four of the five got no rect at all.
 
-- `matchCheckboxes` keeps **one box per line** (§8.9). Four of the five boxes
-  get no rect at all.
-- `hasWideGap` emits **one** `writeIn` for the line regardless of how many gaps
-  it found. The gaps here are the spaces between the five options, so the whole
-  option row reads as one big blank.
+**Measured before the fix:** `smoke.ts` reported `checkbox: 4` against 8 boxes
+detected document-wide. Exactly the predicted deficit, but measured rather than
+reasoned.
 
-§8.12 solved exactly this for combs by keying affordances to **runs**, which is
-why `overlappingRun` returns the run rather than a boolean. **Checkboxes and
-gap-blanks never got the same treatment.** On Harel that was invisible. On the
-W-9 it is plainly visible.
+**Option 3 built** (run-keyed, mirroring `matchCombs` since §8.12):
 
-**Discovery is unaffected — verified.** One line means one id, so the model gets
-one row to answer in, and it answered correctly: "check Individual/sole
-proprietor." The panel looks right.
+- `matchCheckboxes` returns `Map<Line, CheckboxMatch[]>` and APPENDS.
+- Each match carries its own label run via `labelRun` — nearest run on the side
+  the text runs toward. LTR: look right. RTL: look left. Getting this backwards
+  labels every box with its NEIGHBOUR's text, which reads plausibly on a row of
+  similar options.
+- Matches are sorted into reading order within the line.
+- `calibrateMarkOffset` changed in the same edit — see §8.10.
 
-⚠ **§9.4 IS WHERE THIS BREAKS.** That single verdict maps to a single rect, and
-the rect belongs to whichever box was drawn first. **The marker lands on the
-wrong checkbox, and on a row of five identical boxes nobody will notice.** This
-is the same class of silent-wrong-value error as §8.11.
+**Result:** page 1 fields 14 → 18, geometry map 243 → 247, `checkbox: 8`.
+`tagged` unchanged at 12, because all four recovered boxes are on one line.
 
-**Decide before writing marker code**, options in increasing cost:
+✅ **Confirmed on screen** via `GeometryOverlay`: five blue rects, one per
+printed box. ✅ **And the labels are right** — `f0` through `f4` resolve to
+`Individual/sole proprietor`, `C corporation`, `S corporation`, `Partnership`,
+`Trust/estate` in order. First verification `labelRun` has ever had.
 
-1. Ship it and accept wrong placement on multi-option rows. Cheapest, and the
-   question box (§9.7) covers the user who notices.
-2. Suppress markers where a line has more boxes drawn than fields tagged — no
-   marker beats a confidently wrong one.
-3. Make `matchCheckboxes` run-keyed, mirroring `matchCombs`. Correct, and the
-   pattern already exists to copy.
+⚠ **`hasWideGap` was NOT made run-keyed.** It still emits one `writeIn` for the
+line however many gaps it finds, so line 3a carries a sixth field overlapping
+the five checkboxes (§8.26). Deliberate: the checkbox fields already carry
+placement, so the extra tag is redundant rather than wrong.
 
-Moved OUT of §9.9's deferred list.
+### 8.23 §9.7's design decisions, tested rather than assumed
 
-### 8.23 §9.7's design decisions, now tested rather than assumed — NEW
-
-Verified live on Groq / llama-3.3-70b-versatile against the W-9, five questions,
-five passes. Notable because Llama is the WEAK model — §8.18 warns it is where
-prompt rules drop first, so these results are a floor, not a ceiling.
+Verified live on Groq / llama-3.3-70b against the W-9, five questions, five
+passes. Notable because Llama is the WEAK model, so these are a floor.
 
 - **History flattening works.** "And the one right after it — does that apply
-  to me?" resolved to 3b with no restatement. `ProviderRequest` carries ONE
-  message and the transcript is flattened into it (§9.7); real chat roles were
-  not needed. Do not add a `messages` array until something actually fails.
-- **The hardcoded English rule works.** A Hebrew question (`?מה זה TIN`) against
-  an English document returned English.
-- **Both refusal rules held**, and these matter most. "What's the deadline?"
-  returned "not specified in the provided form, check with the client" rather
-  than inventing one. "How do I fill in Schedule K-2?" declined and pointed at
-  Form 1065's instructions rather than answering from memory. These are the
-  rules protecting a user from a confident wrong answer about their own
-  eligibility.
+  to me?" resolved to 3b with no restatement. Do not add a `messages` array
+  until something actually fails.
+- **The hardcoded English rule works.** A Hebrew question (`?מה זה TIN`)
+  against an English document returned English.
+- **Both refusal rules held.** "What's the deadline?" returned "not specified
+  in the provided form" rather than inventing one. "How do I fill in Schedule
+  K-2?" declined and pointed at Form 1065's instructions.
 - **Skips carry reasons**, as designed.
+
+✅ **And it recovered a classification failure live (§8.28).** Asked directly
+about W-9 line 6, it answered correctly — a line classification had omitted.
+That is §10's network-failure fallback doing a job nobody designed it for.
+
+### 8.24 `literalBlanks` matches per RUN, and a dot leader is one run per dot
+
+W-9 line 3b extracts as **19 runs**:
+
+```
+["...See instructions", " ", ".", " ", ".", " ", ".", ...]
+```
+
+`literalBlanks` iterates `line.runs` and matches inside each one, so the longest
+string it ever tests is `"."`. Length one. The pattern needs five. **It cannot
+match, and never could have.**
+
+**The regex is correct.** Joined, the line reads `See instructions . . . . . . .
+. .` and matches cleanly; the LLC line's four dots correctly do not. §8.8's
+thresholds were right all along and remain unexercised.
+
+**Fix, KNOWN AND DEFERRED:** match against `line.text`, map character offsets
+back to runs, and union the rects of the runs a match spans. Union is
+direction-agnostic, so the RTL branch is only needed for the single-run case.
+
+**Why deferred:** the detector has never found a field no other detector found.
+On the W-9 the same blanks are found by `gap`. Only the exact rect of an
+already-detected blank differs. **Do it if a document appears where a literal
+run is the ONLY signal on a line.**
+
+### 8.25 ✅ Geometry overlay built — placement validated in both scripts
+
+`viewer/GeometryOverlay.tsx`, dev-only. `g` cycles off → fields → all. Draws
+every rect in the geometry map, coloured by `source`, dashed when
+`fromDrawnShape` is false, comb cells drawn individually and NUMBERED.
+
+`pointerEvents: "none"` throughout — see §6.10.
+
+**Built instead of verdict markers as the first §9.4 step**, and that was the
+right call: it needs no API key, covers all 247 rects rather than the handful
+the model answers on, and works on any document. Verdict markers became the
+same rects in different colours.
+
+**Results: see §7.3.** Both scripts validated. §8.11 seen rather than predicted.
+
+### 8.26 Overlapping detectors on one line, now visible
+
+W-9 line 3a shows five checkbox rects AND a `gap` writeIn rect over the same
+span. The LLC line likewise has a real write-in (the C/S/P letter) plus a box.
+
+Harmless for discovery — one line, one verdict — but **§9.4 must decide which
+rect a verdict lands on when a line carries both.** `VerdictMarkers` resolves
+by source priority, preferring measured ink over calculated position.
+
+### 8.27 ✅ Optional `ref` on FieldClassification — the model names WHICH field
+
+Classifications key by LINE, but a line can carry six fields. Three changes:
+
+- `projectLines` sends each field's `ref` (§3.2).
+- Prompt rule 6 asks the model to name the specific field on a multi-field line,
+  and explicitly says an omitted ref is handled correctly while a wrong one puts
+  a mark on the wrong box.
+- `parseResponse` validates the ref **against that line's own refs** — a global
+  set-of-all-refs check would accept `p1l7f0` returned against `p1l3` and put
+  the mark on another line. An invalid ref **strips the ref, it does not drop
+  the row**: the verdict and reason are the valuable part.
+
+**Measured, W-9 / Groq:** 9 verdicts, 1 with a ref — `p1l17f0` on line 3a, the
+only genuine five-option row. Zero invalid refs. The weak model used the field
+where it applied and omitted it on the other eight lines.
+
+**Measured, Harel / Anthropic:** 19 of 19 verdicts carry refs.
+
+Absent ref degrades to pre-§8.22 behaviour, so §9.3's tested passes remain the
+floor.
+
+### 8.28 Classification UNDER-returns; the question box recovers it
+
+W-9 through Groq, sole-proprietor context: **9 verdicts on a form with ~12 real
+fields.** Line 5 (Address) got a `fill`; **line 6 (City, state, ZIP) got no
+verdict at all**, though both are required and adjacent.
+
+Not a knowledge failure: asked directly in the question box, the model answered
+that line 6 must be filled in.
+
+⚠ **This inverts §9.3's earlier finding.** That section noted the natural
+failure mode of "consider every line" is over-eagerness. **Silent omission is
+the worse of the two:** an over-eager verdict is visible and dismissible, a
+missing one looks like "nothing to do here."
+
+✅ **Root cause found and fixed — see §8.35.** It was prompt weakness, not model
+capacity. The model never hit the token ceiling in any run.
+
+### 8.29 RTL geometry validated visually
+
+Harel through `GeometryOverlay`: marks land on the correct side (right of the
+label on RTL lines). Coverage visibly denser than the W-9's — expected, since
+Harel draws 20 checkboxes, 12 leaders and 5 combs against the W-9's 8 boxes and
+no rectangles at all.
+
+§8.11 seen rather than predicted: the 9-cell `מס' הזהות` comb numbers left to
+right, so cell 0 holds the LAST digit of an Israeli ID.
+
+### 8.30 ⚠ The OUTPUT ceiling is the binding constraint on Hebrew
+
+Harel, 124 lines, Anthropic:
+
+- 8,000 output tokens, 90s timeout → **timed out**.
+- 4,000 output tokens → **truncated mid-JSON** ("the model's answer wasn't
+  readable").
+- 8,000 tokens, 180s timeout → completed generation in ~100s, still truncated.
+
+§8.18 measured only the INPUT side. Hebrew output tokenizes at roughly one
+token per character, and 124 verdicts with prose reasons do not fit in 8,000
+tokens regardless of how long you wait.
+
+**Workaround in place: classify the CURRENT PAGE only.** `CopilotPanel` passes
+`payload.filter((l) => l.page === pageNumber)` to `runClassification`. Page 1 is
+52 lines and lands comfortably inside the ceiling.
+
+**Cost, stated honestly in the demo:** cross-page reasoning is lost. Harel page
+3 lists which documents to attach depending on which withdrawal type was picked
+on page 1 (§9.9). For a demo that shows page 1, that cost does not apply.
+
+⚠ **`CLASSIFY_TIMEOUT_MS` is now 180_000**, up from 90_000. A full Hebrew page
+takes 60–100 seconds. **This is a demo pacing problem — have something to say
+while it runs.**
+
+### 8.31 §3.1's headline claim — CONFIRMED, after nearly failing
+
+First Harel run (no new job): the untagged clause `התחלתי לעבוד במקום חדש` got
+no verdict. §3.1 asserts a gated design drops it and a text-driven one does
+not — but on that run the text-driven design dropped it too, at the model layer.
+
+Second run, context changed to "started a new job in June 2026": **the model's
+reason for a neighbouring clause explicitly reasons about it.** See §3.1.
+
+**The first run was defensible** — an irrelevant clause is fair to omit. But the
+claim was unproven for two sessions, and one badly chosen context would have
+made the demo's best line unsupportable. **Check the claim on the run you are
+about to demonstrate.**
+
+### 8.32 ✅ §9.3's LANGUAGE RULE VERIFIED — §10's last Hebrew item ticks
+
+Harel page 1, Anthropic, context carrying real personal data. Values came back
+in the form's script and format:
+
+| Field       | Value       | Why it matters                              |
+| ----------- | ----------- | ------------------------------------------- |
+| Name        | `כהן משה`   | Hebrew script, family name FIRST — matching the form's column order |
+| ID          | `039274865` | 9 digits into a 9-cell comb                 |
+| Birth date  | `120385`    | DDMMYY into a 6-cell comb, not DDMMYYYY     |
+
+Every reason in English. Hebrew terms preserved inline where the term IS the
+concept (`פיצויים`, `תגמולים`, `קצבה מוכרת`) rather than translated.
+
+✅ **§3.2's cell-count argument is confirmed at the same time.** The six-cell
+date produced DDMMYY and the nine-cell ID produced nine digits. That was a
+design justification for two sessions and is now a measured result.
+
+### 8.33 ⚠ The language rule LEAKS — intermittently, on Hebrew-dense rows
+
+Same document, same model, different context: **two of five reasons came back
+in Hebrew**, on exactly the rows whose reasoning quoted the form's Hebrew text.
+Every other reason in that run, and all 19 in the previous run, were English.
+
+**This is the failure mode §9.3 predicted:** intermittent, correlated with
+Hebrew-dense content, and invisible to an audience who cannot read Hebrew. A
+consistent failure would have been caught immediately.
+
+⚠ **A later run had ALL FIVE reasons in Hebrew on the same build.** English and
+Hebrew alternated across identical builds. **One pass proves nothing about a
+prompt rule.**
+
+Fixed by §8.35.
+
+### 8.34 The capacity theory was WRONG — worth recording as a wrong turn
+
+When Hebrew reasons appeared alongside a drop from 19 verdicts to 5, the
+obvious theory was that Hebrew's ~4× token cost exhausted the output budget.
+
+**It was wrong.** A later run produced 6 verdicts with SHORT ENGLISH reasons and
+a raw response of ~2,700 characters against an 8,000-token ceiling. `stop_reason`
+was never `max_tokens`. The model was choosing to stop, not running out of room.
+
+Drift and omission were two separate problems that happened to appear together.
+
+### 8.35 ✅✅ THE PROMPT REWRITE — position mattered more than wording
+
+Five changes to `SYSTEM_PROMPT` in `classify.ts`, all needed:
+
+1. **The language rule moved OUT of the numbered list** to AFTER the JSON
+   schema, under its own `CRITICAL` heading. Same requirement, different
+   position.
+2. **`reason` hardcoded to ENGLISH** rather than "the language the person
+   used." Removes an inference step the model was getting wrong, and matches
+   `ask.ts`, which has always hardcoded English (§8.23).
+3. **Rule 1 given a numeric floor:** "a page typically has 15–25 lines worth
+   answering. If you have written fewer than 10 verdicts, go back through the
+   lines you passed over." Plus "never stop early because the answer is getting
+   long."
+4. **Reasons capped at 25 words**, one sentence. Attacks omission from the other
+   side and drifts less than a paragraph does.
+5. **New rule 9:** never leave `value_or_instruction` empty on a `fill`.
+
+**Results, three consecutive runs on Harel page 1:**
+
+| Run | Verdicts | Refs | Reasons  | Values |
+| --- | -------- | ---- | -------- | ------ |
+| 1   | 19       | 19   | English  | Hebrew |
+| 2   | 21       | 17   | English  | Hebrew |
+| 3   | 19       | 19   | English  | Hebrew |
+
+Raw response matched parsed output exactly — nothing dropped in validation.
+
+⚠ **The strongest lesson available here:** the same requirement stated as rule 4
+of 8 drifted on 2 of 5 rows; stated after the schema under its own heading it
+held across three runs. **When a prompt rule is being ignored, try moving it
+before rewriting it.**
+
+### 8.36 ✅ FIXED — the store collapsed multi-field verdicts
+
+`runClassification` built `new Map(...map((c) => [c.id, c]))`, keyed by LINE id.
+Harel line `p1l14` carries three verdicts (birth date, ID, name) and `p1l21`
+carries two. **Last write won, and two of three were silently lost** — at most
+one marker could ever appear on the עמית table row.
+
+This has been true for as long as classifications have existed.
+
+**Fix:** key on `c.ref ?? c.id`. Refs are unique per field; the line id is the
+fallback for verdicts with no ref.
+
+✅ **Confirmed:** three separate markers now render on the עמית row — name, ID,
+birth date — plus two on the withdrawal-type checkboxes.
+
+**Third occurrence of §8.12's line-vs-run bug.** See the rule there.
+
+⚠ **`CopilotPanel` still looks up by line** and now finds only the FIRST of
+several verdicts on a line. Acceptable (panel showing one of three beats the
+store keeping one of three) but it should build its own line-keyed index.
+**TODO in §14.**
+
+### 8.37 ⚠ Rule 9 is unreliable, and captions overflow the page
+
+**Rule 9 (non-empty value on `fill`) does not hold consistently.** One run
+returned Hebrew labels on every checkbox skip; the next returned empty strings
+throughout, same prompt and context. All `fill` verdicts carried values in both
+— so the rule as written is technically satisfied and the earlier run was
+over-delivering.
+
+**Do not depend on the model for captions.** `VerdictMarkers` should fall back
+to the field's own `label`, which is deterministic and already correct (§8.22).
+
+⚠⚠ **AND THE CAPTION OVERFLOWS — THIS IS THE ONE VISIBLE BUG.** A caption like
+`כספי פיצויים – מבקש למשוך את סך כל הכספים ששולמו לרכיב פיצויים` has
+`whitespace-nowrap` and is positioned by `left: rect.left` with no width
+constraint. On an RTL form the rect sits near the right edge, so the caption
+runs off the page, across the copilot panel, and over the ask box.
+
+**It looks broken at the exact moment the best feature fires.** Fix first
+thing — see §14 Step 1.
+
+### 8.38 Diagnostics that must survive, and the DEV-guard trap
+
+⚠⚠ **EVERY `import.meta.env.DEV` GUARD IS DEAD IN THE PRODUCTION BUILD.** Vite
+strips those blocks at compile time. This cost real time three separate times
+today: `smokeReport` appeared not to run, the classification log appeared not to
+run, and the "dropped N of M classifications" warning has been invisible
+throughout.
+
+**Currently worked around by commenting out the guards.** Fix properly:
+
+```ts
+// copilot/dev.ts
+export const COPILOT_DEV = true;
+```
+
+and replace every `import.meta.env.DEV` with it. **TODO in §14.**
+
+**Logs added this session, all worth keeping:**
+
+- `smokeReport(result)` in `run-extraction.ts` — §13.3.
+- `[copilot] N verdicts, M with a ref:` in `runClassification`.
+- `[copilot] raw response: N chars` and `[copilot] raw: …` in `parseResponse`.
+- `[copilot] stop_reason: …` in `callAnthropic` when it isn't `end_turn`.
+  **This one distinguishes "ran out of room" from "chose to stop" and was the
+  measurement that killed the capacity theory (§8.34).**
+
+⚠ None of these touches the API key. Keep it that way (§4).
+
+**A separate trap, hit repeatedly: a stale bundle looks exactly like broken
+code.** Several rounds today were spent debugging behaviour that had never been
+compiled. **Check the bundle hash in the console before believing a result.**
 
 ---
 
@@ -908,104 +1255,104 @@ prompt rules drop first, so these results are a floor, not a ceiling.
 
 ### 9.0 Recommended order
 
-**§9.4 is the only thing blocking a demo.** Read §8.22 first and pick one of its
-three options before writing marker code — the decision changes what you build.
-
-§9.6 is optional. Panel restyling is real but cosmetic.
+Nothing left blocks a demo. §14 has the running order: fix the caption
+(§8.37), run the degradation checks, then rehearse.
 
 ### 9.1 ✅ DONE — pipeline + panel
 
 Extraction wired into `App.openFile`, §7.2 numbers confirmed in-browser,
 `CopilotPanel` lists every line with page grouping and click-to-navigate.
 
-⚠ The panel defaults to **all lines**, not tagged-only. Flip the default once a
-second Hebrew issuer is tested. The toggle stays regardless.
+⚠ The panel defaults to **all lines**, not tagged-only. **Consider flipping the
+default for the demo** — 124 rows reads as a dump, 35 reads as curated. The
+toggle stays regardless.
 
 ### 9.2 ✅ DONE — context intake
 
 Provider dropdown, masked key field disabled until `chrome.storage` has been
-read, "Forget this key", and the two free-text questions. Key persists; context
-answers are in-memory only.
+read, "Forget this key", and the two free-text questions.
 
 Switching provider clears the key — only one `{ provider, apiKey }` pair is
 stored, and an Anthropic key sent to OpenAI produces an auth error that reads
 like a broken integration.
 
-### 9.3 ✅ DONE — the AI call
+⚠ **The context answers do real work.** With a vague situation the model returns
+`unclear` for name/ID/date; with real data it returns Hebrew values (§8.32).
+**Have the test context ready for the demo — it is at the bottom of this file.**
+
+### 9.3 ✅ DONE AND VERIFIED IN BOTH SCRIPTS — the AI call
 
 `getFieldClassifications(payload, context, provider, apiKey)` in `classify.ts`.
-Every line goes, not a filtered list. Returns
-`{ id, fill: "fill"|"skip"|"unclear", value_or_instruction, reason }`.
+Returns `{ id, ref?, fill, value_or_instruction, reason }`.
 
-Transport moved to `provider.ts` this session; behaviour unchanged.
-
-- Ids validated against the payload; unknown ids dropped, with a dev-only
-  warning.
-- 90s timeout via `AbortController`.
+- Ids validated against the payload; refs validated per line (§8.27).
+- **180s timeout** via `AbortController` (§8.30).
 - Every failure path returns a readable message — never a thrown error, never a
   silent hang.
 - ⚠ **The JSON parse has its OWN try/catch**, because `callProvider` has already
   returned successfully by then. Removing it turns a malformed reply into an
   unhandled rejection and the panel spins forever.
 - Markdown fences stripped before parsing.
+- ⚠ **The prompt's structure is load-bearing (§8.35).** The language rule sits
+  AFTER the JSON schema on purpose. Do not tidy it back into the numbered list.
 
-**⚠ THE LANGUAGE SEPARATION IS STILL THE RULE MOST LIKELY TO FAIL INVISIBLY.**
-`reason` in the user's language; `value_or_instruction` in the FORM's language
-and script. **Not yet verified on the Hebrew fixture — blocked on API credit,
-not on code.** Groq can't run it (§8.18). This is the single remaining
-correctness unknown in Phase 2.
+✅ **THE LANGUAGE SEPARATION IS VERIFIED (§8.32).** `reason` English,
+`value_or_instruction` in the form's language and script, on the Hebrew fixture,
+across three consecutive runs.
 
-**Demonstrated on the W-9** (Groq): correct fills, correct skips with reasons,
-and page 2 — pure instructions — returned nothing at all. That last result
-matters as much as the others: the natural failure mode of "consider every
-line" is over-eagerness, and it didn't happen.
+⚠ **Current scope: ONE PAGE PER RUN** (§8.30). `CopilotPanel` passes the current
+page's lines only.
 
-### 9.4 Wiring results into the editor — NOT STARTED — THE LAST FEATURE
+### 9.4 ✅ DONE (read-only) — and SCOPE CUT
 
-Colour-coded markers (fill / skip / unclear) at the coordinates from
-`detect-field.ts`'s client map, plus click-to-prefill.
+`viewer/VerdictMarkers.tsx` draws a green marker on every line the copilot said
+to FILL IN, at the coordinates `detect-field.ts` computed.
 
-⚠⚠ **READ §8.22 FIRST AND PICK AN OPTION.** A row of five identical checkboxes
-maps to one rect. Wrong-box placement is silent.
+**Only `fill` is drawn.** Not skip, not unclear. On a bureaucratic form most
+lines are skips, and drawing them buries the two or three things the user must
+actually do. Nothing is lost — the panel lists every verdict with its reason.
 
-**Pre-fill mechanism, decided:** seed the **draft**, not the store. `cancelEdit`
-removes a text annotation only when the _stored_ `text` is falsy — so seeding
-the store would make Escape keep the AI's value, while seeding the draft gives
-exactly the desired behaviour (click away commits, Escape discards) with **zero
-changes** to `addText` / `commitText` / `cancelEdit`. Mirror the
-`pendingSignature` pattern with a `pendingText`.
+**Which rect, when a line has six** (`resolveRect`):
 
-⚠ **A draft-seeded box mounts with content already in it — a path that has
-never executed**, since every box so far has mounted empty. It is exactly the
-path §6.4 documents three traps in. If pre-filled boxes come out one line tall,
-look at the measurement order, not the marker code.
+1. **Ref wins.** `classify.ts` validated it against that line's own refs.
+2. Otherwise **highest-priority source**: checkbox → comb → literal → leader →
+   gap → calibrated. Measured ink before calculated position.
+3. **Unless that is ambiguous** — several rects of the winning source and no
+   ref. Then draw NOTHING. A mark on the wrong one of five identical checkboxes
+   is invisible to the user and wrong on their form.
 
-⚠ This is where §8.11 (RTL cell order) finally gets exercised. A 9-digit ID
-fills cell index 8 down to 0. Filling 0 upward writes it mirrored and looks
-plausible on screen.
+Lines with no fields at all fall back to the per-line calibrated entry — the
+`התחלתי לעבוד` case.
 
-⚠ This is also where §7.3's remaining LTR branches (`edgeDistance`,
-`offsetMark`) get validated against a rendered position for the first time.
+⚠⚠ **NO CLICK-TO-PREFILL, DELIBERATELY.** The user places the value with the
+existing text / symbol / signature tools. The AI's answer and the place you act
+on it are still the same interface (§2), which is the product claim — it does
+not require the tool to type for you.
 
-✅ Copilot state already lives in its own store, so AI responses don't set
-`dirty` on the annotation store.
+**Consequences, all good:**
 
-### 9.5 Multi-provider — ✅ DONE, three not two
+- §6.4's never-executed "box mounts with content" path is never executed.
+- §8.11's mirrored-ID risk disappears — nothing writes into cells
+  programmatically.
+- §14's old sub-steps 2 and 3 are **cancelled, not deferred**.
+
+It is also the more honest answer about what an AI should be trusted to do with
+someone's tax form. **Say that in the demo rather than apologising for it.**
+
+**Outstanding, small:** caption overflow and label fallback (§8.37).
+
+### 9.5 ✅ DONE — multi-provider, three not two
 
 Anthropic, OpenAI, Groq. One internal function branching on
-`PROVIDER_CONFIG.openAiCompatible`, now in `provider.ts`. No
-`if (provider === …)` anywhere in UI code. Adding a compatible provider is a
-one-line change.
+`PROVIDER_CONFIG.openAiCompatible`. No `if (provider === …)` anywhere in UI
+code. Adding a compatible provider is a one-line change.
 
-**Still open:** web search grounding is wired differently per provider. Decide
-which one gets it before building §9.6.
+**Demo runs on Anthropic** (`claude-sonnet-5`). Groq cannot fit Hebrew (§8.18).
 
-### 9.6 Web search grounding — NOT STARTED, optional
+### 9.6 Web search grounding — NOT STARTED, CUT for the demo
 
-Only when the model flags genuine uncertainty (e.g. a legal eligibility rule),
-not every field. Needs a timeout so a slow search never hangs the UI.
-
-`provider.ts` already takes `timeoutMs` per call, so the plumbing exists.
+Optional. `provider.ts` already takes `timeoutMs` per call, so the plumbing
+exists if it is ever wanted.
 
 ### 9.7 ✅ DONE — follow-up question box
 
@@ -1014,57 +1361,46 @@ text already in context. Markers answer "what goes in this field"; this answers
 "what does מס שבירה mean" and "I have a loan against the account, does that
 change which box I tick."
 
-**Shape:**
-
 - `ask.ts` — prompt, history flattening, prose out. No parsing.
-- 45s timeout (not 90 — a user watching a box will reload, and a reload loses
+- 45s timeout (not 180 — a user watching a box will reload, and a reload loses
   the extraction AND every annotation).
 - 1,200 output tokens.
 - History: last **3** exchanges, each remembered answer truncated to 500 chars.
-  Questions kept whole. Cost stays flat instead of growing per question.
-- **English answers, hardcoded**, except a literal value to type, which stays in
-  the form's script.
+- **English answers, hardcoded**, except a literal value to type.
 - ⚠ **`askThread` never holds a half-turn** — the in-flight question lives in
-  `pendingQuestion`. The thread is resent to the model as history, so a turn
-  with an empty answer would upload `A:` followed by nothing.
+  `pendingQuestion`.
 - ⚠ **`ask()` returns a boolean** so the panel clears its textarea only on
-  success. The draft is local state; failing shouldn't delete what they typed.
+  success.
 - ⚠ **Independent of classification by design.** Reads no `status`, no
-  `classifications`, not blocked while classification runs. That independence
-  IS §10's network-failure fallback. Don't "tidy" it by gating the box.
-- ⚠ **Not a `<form>`** — a real form on an extension page submits and navigates,
-  unmounting the viewer and losing everything.
-- **Deliberately NOT sent: the classifications.** So "why did you say skip on
-  that line?" is answered poorly. Left out on token cost. If added, send only
-  verdicts near the line in question, never all of them.
+  `classifications`. That independence IS §10's network-failure fallback, and
+  it earned its keep live (§8.23, §8.28). Don't gate the box.
+- ⚠ **Not a `<form>`** — a real form on an extension page submits and navigates.
+- **Deliberately NOT sent: the classifications.** Token cost.
 
-Tested five ways — see §8.23.
+**TODO left in `CopilotPanel.tsx`:** auto-scroll to the newest turn (LAYOUT
+effect, not `useEffect`), and the §6.10 Delete-key check.
 
-**TODO left in `CopilotPanel.tsx`:** auto-scroll to the newest turn (use a
-LAYOUT effect, not `useEffect` — a passive effect scrolls after the browser has
-painted the pre-growth height and flashes), and the §6.10 Delete-key check.
+### 9.8 Phase 3 — CUT
 
-### 9.8 Phase 3, only if time remains
+AcroForm explanation layer. Neither test document has an AcroForm, so this needs
+a third document to demo at all. **Cut, not deferred.** The only thing worth
+doing is confirming an AcroForm PDF degrades rather than crashes (§14 Step 2).
 
-AcroForm explanation layer. **Neither test document has an AcroForm**, so this
-needs a third document to demo at all.
-
-### 9.9 Deferred, with reasons
+### 9.9 Deferred, with reasons — say these out loud if asked
 
 - **Two-column reading order (§8.21)** — panel readability and model context
   only; placement unaffected, and the model classified correctly through it.
-  Needs a "is this page two-column" rule that can't scramble the common case.
 - **Rule-bounded box detection (§8.17)** — placement only; the same geometry
   means opposite things on the two test documents.
-- **Per-page chunking of the payload** — needed for 50+ page documents. ⚠ Cost
-  is real: Harel page 3 lists which documents to attach _depending on which
-  withdrawal type was picked on page 1_. Chunking breaks that link. A fallback,
-  not a default.
+- **`literalBlanks` granularity (§8.24)** — the same blanks are already found by
+  `gap`; only the exact rect differs.
+- **Per-page chunking as a general solution** — currently a hard page filter
+  (§8.30). ⚠ Cost is real: Harel page 3 lists which documents to attach
+  _depending on which withdrawal type was picked on page 1_.
 - **Absolute size floor for checkbox candidates (§8.7)** — cheap second guard.
 - **Sending classifications to `ask.ts`** — token cost; see §9.7.
-- **Panel restyling** — real work, cosmetic. `LineRow`, `AskBox` and the badges
-  all carry TODO markers; structure and `data-editor-chrome` are the
-  load-bearing parts and are safe to build around.
+- **Click-to-prefill (§9.4)** — cut on product grounds, not time.
+- **`hasWideGap` run-keying (§8.22)** — redundant where it matters.
 
 ---
 
@@ -1078,25 +1414,26 @@ needs a third document to demo at all.
 - [x] Multi-page text PDFs open without crashing
 - [x] Signature draws smoothly, resizes without distortion
 - [x] Unsaved-changes warning fires
-- [x] Exported PDF correct in macOS Preview and Chrome — verified with
-      `חשבון 935921908 בבנק HSBC`. Adobe Reader still untested.
+- [x] Exported PDF correct in macOS Preview and Chrome
 - [x] Hebrew font still exports after removing `web_accessible_resources`
+- [ ] **Export an ID number and check it in Adobe Reader (§6.1).** The copilot
+      now returns `039274865` as a value the user will type. Higher stakes than
+      when this was written.
 - [ ] Single-page and large (50+ page) files
 - [ ] Scanned/image-only PDF degrades cleanly
 
 **Extraction**
 
 - [x] TypeScript compiles (strict, noUnusedLocals)
-- [x] Runs end to end in Node
 - [x] **§7.2 numbers reproduce in-browser**
 - [x] Reading order correct (א ב ג / ד ה ו ז ח ט)
-- [x] `hasEOL` guard silent on good documents, fires when forced
-- [x] Corruption gate: suppressed on an English document, re-confirmed on W-9
+- [x] Corruption gate: suppressed on an English document
 - [x] An English **form** — W-9, checkbox detection validated LTR
-- [x] `literalBlanks` fires on a real document (§8.20) — badge check pending
+- [x] **Generic smoke report exists and works on any document (§13.3)**
+- [x] **Multi-checkbox rows detected (§8.22)** — `checkbox: 8` on the W-9
+- [x] **Placement validated on screen, both scripts (§7.3)**
 - [ ] A second Hebrew form from a different issuer
-- [ ] A non-InDesign PDF where the `hasEOL` guard actually FIRES (§8.15). The
-      W-9 is non-InDesign but its markers are sound, so this is still open
+- [ ] A non-InDesign PDF where the `hasEOL` guard actually FIRES (§8.15)
 - [ ] An AcroForm PDF — confirm it degrades rather than crashes
 
 **Copilot**
@@ -1104,52 +1441,51 @@ needs a third document to demo at all.
 - [x] API key flow: first-run prompt, persists, doesn't re-ask
 - [x] Visible error if key missing or invalid — never a silent hang
 - [x] Verdicts render per line with reason and value
-- [x] Model does NOT over-classify prose (W-9 page 2 returned nothing)
 - [x] Skips carry reasons
-- [x] Question box: grounding, history, language, and both refusal rules (§8.23)
-- [ ] **Hebrew demo: explanations in English, values in Hebrew** ⚠ unverified,
-      blocked on paid credit
-- [ ] Field-to-line mapping stable on repeated runs
-- [ ] Both providers produce correctly-structured JSON on the same document
+- [x] Question box: grounding, history, language, both refusal rules (§8.23)
+- [x] **Hebrew demo: explanations in English, values in Hebrew (§8.32)** ✅
+- [x] **Cell counts respected — DDMMYY into 6 cells, 9 digits into 9 (§8.32)**
+- [x] **Markers render at verified coordinates (§9.4)**
+- [x] **Multi-field lines produce multiple markers (§8.36)**
+- [x] **§3.1's untagged-clause claim demonstrated live (§8.31)**
+- [ ] **Field-to-line mapping stable on repeated runs** — three clean runs so
+      far, do more
 - [ ] Provider switch relabels/clears the key field (implemented, untested)
-- [ ] ID number lands in cells **right to left** (§8.11) — blocked on §9.4
-- [ ] Multi-option row markers (§8.22) — blocked on §9.4
-- [ ] Web search has a timeout — blocked on §9.6
-- [ ] Groq + Hebrew + ask at 1,200 tokens: fits or 413s (§8.18) — 2 minutes
+- [ ] Caption never overflows the page (§8.37)
 
 **Overall**
 
 - [x] Network-failure fallback exists (the question box, §9.7)
-- [ ] `App.openFile` calls `resetResults()` on a new document — CHECK THIS.
-      Without it the old thread carries over and is resent as history for a
-      document that is no longer open
+- [x] `App.openFile` calls `resetResults()` on a new document — CONFIRMED, it
+      is inside `openFile` before `loadPdf`, next to `setExtraction(null)`
+- [x] Paid API credit topped up ($5 Anthropic; a full run costs cents)
 - [ ] Full demo rehearsed 3–5+ times on the exact file being presented
 - [ ] Tested on a clean Chrome profile
+- [ ] `PROVIDER_CONFIG` model names re-verified on demo morning
 - [ ] `verify.ts` filename gate in place, or removed entirely
-- [ ] Paid API credit topped up (Groq cannot run the Hebrew fixture — §8.18)
+- [ ] Geometry overlay OFF by default and not accidentally toggled on stage
 
 ---
 
 ## 11. Ideas and open questions (not committed)
 
 - **OCR — explicitly cut.** Would be the fallback for §8.4 and scanned pages.
-  (If it happens: Tesseract needs `heb` loaded explicitly.)
-- **Extraction-quality signal as a first-class concept.** Partly built —
-  `lineSource`, `geometryOk`, `readable`, `corruptionCheckApplied`.
+- **Extraction-quality signal as a first-class concept.** ✅ Now built —
+  `smoke.ts` surfaces `lineSource`, `geometryOk`, `readable`,
+  `corruptionCheckApplied` and the mark-source histogram in one place.
 - **`page.getStructTree()`** for reading order on tagged PDFs (§8.14, §8.21).
 - **Column detection** for two-column pages (§8.21).
 - **`messages` array on `ProviderRequest`** — only if history flattening starts
   losing the thread. It hasn't (§8.23).
+- **A token-cost estimate under the classify button** —
+  `JSON.stringify(projectLines(payload)).length / 4`. Cheap, and it makes the
+  BYOK story concrete in the demo.
 - **`TextLayer.update({ viewport })`** repositions spans instead of rebuilding
   on zoom. Not worth doing until something feels slow.
-- **Canvas blanks on every zoom step.** Render to a detached canvas, swap on
-  completion. Cosmetic.
+- **Canvas blanks on every zoom step.** Cosmetic.
 - **Signature is a raster.** `embedPng` means slightly soft at high zoom.
 - **Filled checkboxes** — the size histogram pools stroked and filled
-  deliberately. Risk: a document whose bullet markers are small filled squares
-  out-voting real checkboxes. Fix if it trips: prefer the stroked cluster.
-- **Slide decks** will produce phantom checkboxes — harmless: tags enrich, the
-  model reads slide text and finds no fields.
+  deliberately. Fix if it trips: prefer the stroked cluster.
 
 ---
 
@@ -1157,38 +1493,28 @@ needs a third document to demo at all.
 
 - Explain the file and its non-obvious parts before writing code.
 - One file at a time.
-- Skeletons with TODO blocks; the human writes the component logic.
 - The cancellation pattern in §6.8 is reused for every long-running pdf.js op.
 - Comments earn their place by recording _why_, especially where the code looks
-  wrong and isn't. `ltrFontkit`, the inline-style rules in `TextAnnotation.tsx`,
-  the opcode-stride switch in `extract-geometry.ts`, the alpha-run tokenizer in
-  `findSuspectRanges`, the reading-order sort, and `projectLines`' field-by-field
-  rebuild are all in that category.
+  wrong and isn't.
 - **Verify claims against the fixture rather than reasoning about them.** Nearly
-  every finding in §8 contradicted a confident prior assumption.
-- **Test on whatever PDF is lying around.** This is now four sessions running
-  where the non-fixture document produced the session's most important finding.
-  §8.20, §8.21 and §8.22 all came from the W-9, and §8.22 changes the next
-  session's plan.
-- **Refactor before adding the second caller, not after.** §9.7 was described as
-  "one API call on machinery that already exists" — it wasn't, because the
-  machinery was welded to `classify.ts`. Extracting `provider.ts` first cost one
-  file and prevented two timeout values, two error vocabularies, and a second
-  place the API key could be logged.
+  every finding in §8 contradicted a confident prior assumption. §8.20 was
+  marked ✅ and was false. §8.34 was a confident theory and was wrong.
+- **Build the tool that prints numbers before the feature that needs them.**
+  `smoke.ts` deleted a false ✅ on its first run; `GeometryOverlay` validated
+  both coordinate branches without an API key.
+- **One pass proves nothing about a prompt rule (§8.33).** English and Hebrew
+  alternated across identical builds. Run it at least twice before believing it.
+- **When a prompt rule is ignored, try MOVING it before rewriting it (§8.35).**
+- **Check the bundle hash before believing a result (§8.38).**
+- **Test on whatever PDF is lying around.** Five sessions running, the
+  non-fixture document produced the session's most important finding.
+- **Refactor before adding the second caller, not after.**
 
 ---
 
 ## 13. Generalising beyond the two test documents
 
-The goal is a copilot that works on whatever form a user opens, not on two
-known files. This section records how close that already is, where it isn't,
-and the cheapest thing that would make every new document faster to evaluate.
-
 ### 13.1 What is already generic — do not "improve" these into constants
-
-Almost nothing in `copilot/` is bound to a specific document. That was
-deliberate (§8.7) and it is why the W-9 worked on the first attempt without a
-single code change.
 
 | Value           | Where it comes from                                        |
 | --------------- | ---------------------------------------------------------- |
@@ -1204,163 +1530,197 @@ filename-gated.
 
 And §3.1 is the larger protection: discovery is text-driven, so a document
 where every detector fails still gets every field found, explained and listed.
-Verified three times, most convincingly on W-9 page 1 with three simultaneous
-defects.
 
 ### 13.2 What is rule-based but only ever exercised on two documents
 
-These are the places a third document is most likely to hurt. Note they are
-**producer-shaped, not language-shaped** — which is what §13.4 acts on.
-
 - **Line splitting (§8.15).** The `hasEOL` guard has NEVER fired on a real
-  document; both test files have sound markers. On the fallback path text
-  degrades slightly and **placement degrades badly**. Highest-risk unknown.
-- **Reading order (§8.14, §8.21).** y-descending. Correct on single-column,
-  interleaves on two-column. Confirmed on W-9 page 1.
+  document. On the fallback path text degrades slightly and **placement
+  degrades badly**. Highest-risk unknown.
+- **Reading order (§8.14, §8.21).** y-descending. Interleaves on two-column.
 - **Checkbox mode needs ≥3 occurrences (§8.7).** A form with two checkboxes
-  total gets none. Correct behaviour, worth knowing before it surprises you.
-- **The 15% Latin gate (§8.16).** Harel sits at 1.6%, the W-9 near 100%.
-  Nothing has ever landed near the boundary. A genuinely bilingual form is
-  untested.
-- **Form idiom (§8.17).** Harel and the W-9 are already two incompatible
-  idioms — inline gaps vs regions bounded by unconnected strokes. Assume a
-  third exists.
+  total gets none.
+- **The 15% Latin gate (§8.16).** Harel 1.6%, W-9 100.0%. Nothing has landed
+  near the boundary. A genuinely bilingual form is untested.
+- **Form idiom (§8.17).** Two incompatible idioms already. Assume a third.
+- **`labelRun` (§8.22).** Verified on five W-9 boxes. Never checked on a Hebrew
+  multi-option row, because Harel does not have one.
 
-### 13.3 ⚠ BUILD THIS FIRST: a generic smoke report
+### 13.3 ✅ BUILT — the generic smoke report
 
-`verify.ts` asserts hardcoded fixture numbers and is meaningless elsewhere.
-What is missing is its generic cousin: **open any PDF, read six numbers, know
-in ten seconds whether extraction worked.**
+`copilot/smoke.ts`, called from `run-extraction.ts`. No assertions, no expected
+values, no per-document baseline. Prints:
 
-No assertions, no expected values, no per-document baseline. Just what
-extraction concluded, printed.
+- **A per-page table:** lines, tagged, fields, unreliable, `lineSource`,
+  `quality`, Latin %, and raw shape counts (boxes / combs / rules).
+- **A mark-source histogram**, split into real detections and per-line
+  fallbacks. **This is the part that caught §8.20's false ✅.**
+- **Document facts:** checkbox mode + match count, calibrated `markOffset`,
+  corruption gate side, `geometryOk`, `readable`.
+- **First and last three lines per page** — the reading-order eyeball. §8.21's
+  interleaving is visible here in two seconds.
+- **A warnings block** that only appears when something is off.
 
-**Suggested shape — `copilot/smoke.ts`, dev-only, called from
-`run-extraction.ts` behind `import.meta.env.DEV`:**
+⚠ **Its guard is currently commented out** because of §8.38. Restore properly
+via a `COPILOT_DEV` constant.
 
-| Signal                                 | Source                            | Read it as                            |
-| -------------------------------------- | --------------------------------- | ------------------------------------- |
-| lines per page                         | `ExtractedPage.lines.length`      | 1 per page = line splitting failed    |
-| tagged lines per page                  | payload entries with `fields`     | 0 everywhere = geometry found nothing |
-| `lineSource`                           | `ExtractedPage.lineSource`        | `"clustered"` = §8.15 fired           |
-| `quality`                              | `ExtractedPage.quality`           | `"empty"` = scan, copilot off         |
-| checkbox mode + occurrence count       | `DocumentGeometry.checkboxSize`   | mode from <3 = no confident size      |
-| `geometryOk`                           | `Extraction`                      | false = placement approximate         |
-| `corruptionCheckApplied` + Latin %     | `DetectionResult`, `page.letters` | shows which side of the 15% gate      |
-| first 3 and last 3 line texts per page | `lines`                           | eyeball reading order in one glance   |
+**How to read it:** `lines: 1` = line splitting failed. `tagged: 0` on a real
+form = a third form idiom. `lineSource: "clustered"` = §8.15 fired for the first
+time ever. `checkbox: 4` against 8 boxes = matching is dropping them.
 
-Most of these already exist and are already computed — this is surfacing, not
-new detection. §11 has been calling this "extraction-quality as a first-class
-concept" and it is now half-built by accident.
+### 13.4 What to collect
 
-**Why it is worth a session's opening hour:** every document tested afterwards
-costs ten seconds instead of a manual panel inspection, and the numbers are
-directly quotable into a new §8 finding.
+Bring documents from **different producers**, not different languages.
 
-### 13.4 What to collect, and why these four
-
-Bring documents from **different producers**, not different languages. Language
-is mostly handled; producers are what break line splitting and geometry.
-
-1. **Word / Google Docs export** — most likely thing to fire §8.15's guard for
-   the first time. Highest information value of the four.
-2. **A government e-file PDF that is not the W-9** — tests whether a third form
-   idiom exists (§8.17).
-3. **A scan or photo of a form** — must return `readable: false` and say so in
-   the panel. Never tested; §6.12 flags it.
-4. **A second Hebrew issuer** — the one gap that IS language-shaped, and the
-   only way to trust RTL beyond a single form.
-
-Whatever is lying around beats anything sought out. Four sessions running, the
-non-fixture document produced the session's most important finding.
+1. **Word / Google Docs export** — most likely to fire §8.15's guard for the
+   first time. Highest information value.
+2. **A government e-file PDF that is not the W-9** — tests for a third form
+   idiom (§8.17).
+3. **A scan or photo of a form** — must return `readable: false`. Never tested.
+4. **A second Hebrew issuer** — the one gap that IS language-shaped.
 
 ### 13.5 The rule for what to do with what you find
 
 **A new document's failure is a §8 entry before it is a code change.** Record
-the numbers, then decide. Three of the last four sessions' findings turned out
-to be cheaper to document than to fix, and two of them (§8.8's false positive,
-§8.21's interleaving) are still deliberately unfixed with reasons written down.
+the numbers, then decide. Several findings turned out cheaper to document than
+to fix, and three are still deliberately unfixed with reasons written down
+(§8.8, §8.21, §8.24).
 
 Resist adding a constant. Every constant in this codebase that isn't derived
 from the document is a per-document tuning knob in disguise.
 
 ---
 
-## 14. How to start the next session
+## 14. How to start the next session (16 August)
 
-Ordered. Each step says what, when to stop, and what to write down.
+Ordered. Everything here is polish or verification — no features.
 
-### Step 0 — Confirm the two open checks (10 minutes)
+### Step 1 — Fix the caption (§8.37). FIRST. ~40 minutes.
 
-Neither needs code.
+**This is the only visible bug and it appears at the best moment in the demo.**
 
-- **`App.openFile` calls `resetResults()`?** Grep it. If not, add it. Without
-  it, opening a second document carries the old ask thread over and resends it
-  to the model as history for a document that is no longer open.
-- **The `writeIn` badge on W-9 line 3b.** Dots in the extracted text are not
-  proof `literalBlanks` ran (§8.20). Open the W-9, find 3b, look for the badge.
-  Confirm the LLC line above it does NOT have one. Then §8.20 is closed.
+In `VerdictMarkers.tsx`'s `Marker`:
 
-### Step 1 — The Groq/Hebrew question (2 minutes)
+- Drop `whitespace-nowrap`. Add `max-width` (the rect's width or ~220px),
+  `overflow: hidden`, `text-overflow: ellipsis`.
+- **Anchor from the RIGHT edge on RTL lines.** The rect sits near the page's
+  right edge, so a left-anchored caption has nowhere to go. `FieldGeometry`
+  does not carry direction — either add it, or derive from
+  `markRect.x > viewport.width / 2` as a cheap proxy.
 
-Open the Hebrew fixture, **skip the classify button**, ask one question in the
-box. The ask call requests 1,200 output tokens where classify requests 3,000
-(§8.18).
+In `markerLabel`: **fall back to the field's own `label`** when
+`value_or_instruction` is empty. Rule 9 is unreliable (§8.37) and the label is
+deterministic.
 
-Record either "fits" or the two numbers from the 413 body. Then §8.18 is closed
-either way.
+Then re-run and look at the screen, not the console.
 
-### Step 2 — Build the smoke report (§13.3)
+### Step 2 — The three degradation checks. ~45 minutes.
 
-One file, dev-only, no assertions. Everything after this step gets faster.
+Each is "does it fail gracefully", not "does it work".
 
-### Step 3 — Run every document you brought through it (§13.4)
+- **A scan or photo of a form** → must show "no text layer, editor works
+  normally". Never tested. §6.12.
+- **A 50+ page PDF** → editor must not die. §10.
+- **Any AcroForm PDF** → must not crash. §9.8.
 
-For each: open it, read the smoke output, glance at the panel. **Do not fix
-anything yet.** Write the numbers down first — §13.5.
+Run each through `smoke.ts` first and write the numbers down (§13.5).
 
-Stop and take note especially if:
+### Step 3 — One other document through smoke. ~15 minutes.
 
-- `lineSource` comes back `"clustered"` → §8.15 fired for the first time ever.
-  This is the single most valuable result available right now. Record which
-  producer did it and what the panel looked like.
-- tagged count is 0 on a form that clearly has fields → a third form idiom
-  (§8.17). Not a bug; a finding.
-- `quality: "empty"` on the scan → correct behaviour, tick §10.
+§13.4's list, whatever is lying around. Watch for `lineSource: "clustered"` —
+still the single most valuable unclaimed result.
 
-### Step 4 — §9.4, the last feature
+### Step 4 — Small correctness TODOs. ~30 minutes.
 
-⚠ **Read §8.22 and pick one of its three options before writing marker code.**
-A row of five identical checkboxes maps to one rect, and wrong-box placement is
-silent. The decision changes what you build.
+- **`COPILOT_DEV` constant** replacing every `import.meta.env.DEV` (§8.38).
+- **`CopilotPanel` line-keyed index** so a row with three verdicts shows more
+  than the first (§8.36).
+- **Consider defaulting the panel to tagged-only** (§9.1).
+- Optionally: token estimate under the classify button (§11).
 
-Then, in this order, because each one is a trap that masks the next:
+### Step 5 — Then 17 August is styling, 18 August is the speech.
 
-1. Render markers read-only first — no click-to-prefill. This validates
-   §7.3's untested LTR branches (`edgeDistance`, `offsetMark`) against a
-   rendered position for the first time. Check both a Hebrew and an English
-   document; the two branches are separate code.
-2. Add click-to-prefill for plain text boxes. ⚠ §6.4 — a box mounting with
-   content already in it has never executed. If pre-filled boxes come out one
-   line tall, the measurement order is the cause, not the marker code.
-3. Add comb cells last. ⚠ §8.11 — a 9-digit ID fills cell index 8 down to 0 on
-   an RTL form. Filling 0 upward writes it mirrored and looks entirely
-   plausible on screen. **Verify by exporting and reading the PDF, not by
-   looking at the editor.**
+See §15.
 
-### Step 5 — Stop
+### What NOT to do
 
-§9.4 done, or one of its three sub-steps done, is a complete session. §9.6 is
-optional and panel restyling is cosmetic; neither blocks a demo.
+- **Don't add click-to-prefill.** Cut on product grounds (§9.4). It is also the
+  one remaining change that could break what works — §6.4 documents three traps
+  in a path that has never executed.
+- **Don't fix two-column reading order (§8.21) or `literalBlanks` (§8.24).**
+- **Don't tidy the prompt's structure (§8.35).** The language rule sits after
+  the schema on purpose.
+- **Don't strip the comments to "clean up" the code.** They are the material
+  for the 18th. Write a workflow MD instead (§15).
+- **Don't add a constant to fix a per-document surprise.** §13.5.
 
-Update §8 with anything new, tick §10, and write the next session's starting
-point at the top of this file.
+---
 
-### What NOT to do next session
+## 15. Demo plan (19 August)
 
-- Don't fix the two-column reading order (§8.21). Placement is unaffected and
-  the model classified correctly through it.
-- Don't build rule-bounded box detection (§8.17). Placement only, and the same
-  geometry means opposite things on the two test documents.
-- Don't add a constant to fix a per-document surprise. See §13.5.
-- Don't restyle the panel until §9.4 renders, or you will style it twice.
+### 15.1 The three-day shape
+
+- **16th** — §14. Caption fix, degradation checks, small TODOs.
+- **17th** — styling. Panel hierarchy, empty state, waiting state, verdict rows.
+  Safe work: it cannot break correctness. Rehearse once at the end.
+- **18th** — concepts and speech. No code. Rehearse 3–5 times, once on a clean
+  Chrome profile.
+
+### 15.2 Concepts to know cold
+
+1. **Why no backend** — and what it buys (§3, §4). Easiest and strongest.
+2. **Why the model sees all the text, not a list of blanks** (§3.1). The
+   headline. The Harel untagged-clause transcript (§8.31) is the evidence.
+3. **How a text answer becomes a coordinate** (§7.1, §8.9, §9.4).
+4. **Sizes derived, never hardcoded** (§8.7, §13.1) — why the W-9 worked on the
+   first attempt with zero code changes.
+5. **What it deliberately does NOT do** — no prefill, no OCR, one page at a
+   time, each with a reason (§9.4, §9.9). Knowing why you didn't build
+   something is stronger than having built it.
+
+### 15.3 Stories worth telling
+
+- **§3.1 / §8.31** — discovery survived three simultaneous geometry defects on
+  the W-9, and on Harel the model reasoned about a clause that has no checkbox
+  drawn beside it. The architecture's central bet, paying off on transcript.
+- **§8.20** — a claim marked ✅ turned out to be false, and what caught it was a
+  tool built to print numbers rather than assert them. An engineering-judgement
+  story, and rarer than a working feature.
+- **§8.35** — a prompt rule that was being ignored started working when it was
+  MOVED, not reworded. Concrete, surprising, and true.
+
+### 15.4 Live-demo hazards
+
+- **Classification takes 60–100 seconds** (§8.30). Have something to say. This
+  is the natural moment for §15.2's architecture explanation.
+- **If a run comes back thin**, the question box is the fallback and it is
+  independent by design (§9.7). It recovered a real omission live (§8.28).
+- **Don't press `g`** on stage unless you mean to (§8.25).
+- **Re-verify the model name** that morning (§8.19).
+- **Check §3.1's claim on the run you are about to show** (§8.31) — one badly
+  chosen context makes the demo's best line unsupportable.
+
+### 15.5 Test context — use these exact strings
+
+**What is this document?**
+
+```
+Harel severance withdrawal form — my employer's pension provider sent it.
+```
+
+**What do you need to do?** (produces Hebrew values, §8.32)
+
+```
+I left my job in March 2026 and haven't started a new one. I want to withdraw
+the severance in full. My name is משה כהן, ID 039274865, born 12/03/1985,
+bank account at Leumi branch 800.
+```
+
+**Variant that demonstrates §3.1's untagged clause** (§8.31) — change "haven't
+started a new one" to:
+
+```
+started a new job in June 2026
+```
+
+The model then reasons explicitly about `התחלתי לעבוד במקום חדש`, a clause with
+no checkbox drawn beside it. **That is the demo's best single moment.**

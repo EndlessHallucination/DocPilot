@@ -220,6 +220,9 @@ async function callAnthropic(
     if (!response.ok) throw await providerError(response);
 
     const data = await response.json();
+    if (data.stop_reason && data.stop_reason !== "end_turn") {
+        console.warn(`[copilot] stop_reason: ${data.stop_reason}`);
+    }
 
     // content is an ARRAY OF BLOCKS; concatenate the text ones rather than
     // assuming content[0]. A refusal or a stop-reason block sitting first
