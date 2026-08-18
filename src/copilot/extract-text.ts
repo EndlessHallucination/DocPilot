@@ -1,8 +1,11 @@
 /**
+ * copilot/extract-text.ts
  *
- * Turns a pdf.js page into ordered lines of text in LOGICAL order, in PDF
- * points (origin bottom-left) — the same space state/annotations.ts stores in.
+ * Turns a pdf.js page into ordered lines of text in LOGICAL order, in PDF points
+ * (origin bottom-left) — the same space state/annotations.ts stores in.
  *
+ * A PDF has no concept of a line, so most of this file is reconstructing one.
+ * EXPLAINER §3.1–§3.5.
  */
 
 import type { PDFPageProxy } from "pdfjs-dist";
@@ -33,7 +36,7 @@ export interface Run {
     fontId: string;
     /** Index into the original getTextContent().items array. */
     sourceIndex: number;
-    /** Character ranges within `text` that failed the readability check (§6.7). */
+    /** Character ranges within `text` that failed the readability check. */
     suspectRanges: TextRange[];
 }
 
@@ -42,7 +45,7 @@ export interface Line {
     runs: Run[];
     /** Concatenation of runs in logical order. */
     text: string;
-    /** Shared baseline. */
+    /** Shared baseline. NOT the top of the line — see detect-field's lineBounds. */
     y: number;
     /** Extents in points, regardless of direction. */
     minX: number;
@@ -57,43 +60,40 @@ export interface ExtractedPage {
     width: number;
     height: number;
     lines: Line[];
-    /**
-     * 'empty' = no text layer at all, i.e. a scanned page.
-     */
+    /** 'empty' = no text layer at all, i.e. a scanned page. */
     quality: "ok" | "empty";
+    /** "clustered" means the hasEOL guard fired — see buildLines. */
     lineSource: "eol" | "clustered";
     letters: { latin: number; rtl: number };
-
-
 }
 
 interface BuiltLines {
     runGroups: Run[][];
     source: "eol" | "clustered";
 }
+
 // ---------------------------------------------------------------------------
 // Character classes
 // ---------------------------------------------------------------------------
 
 /** Hebrew, Arabic, and friends. Strong RTL. */
 const STRONG_RTL = /[\u0590-\u08FF\uFB1D-\uFDFF\uFE70-\uFEFF]/;
-/** Latin. Strong LTR. Digits and punctuation are deliberately absent — they're neutral. */
+/** Latin. Strong LTR. ⚠ Digits and punctuation absent on purpose — neutral. */
 const STRONG_LTR = /[A-Za-z\u00C0-\u024F]/;
-
-/** Anything bigger than float noise counts as rotated. */
-const ROTATION_EPSILON = 0.01;
-
-
-
-const CLUSTER_TOLERANCE_RATIO = 0.5;
-
 
 const STRONG_RTL_GLOBAL = /[\u0590-\u08FF\uFB1D-\uFDFF\uFE70-\uFEFF]/g;
 const STRONG_LTR_GLOBAL = /[A-Za-z\u00C0-\u024F]/g;
 
-const MAX_LINE_SPAN_RATIO = 3;
-const MAX_IMPLAUSIBLE_LINE_SHARE = 0.25;
+/** Anything bigger than float noise counts as rotated. */
+const ROTATION_EPSILON = 0.01;
 
+/** Fallback clustering: share of a glyph's height that still counts as one line. */
+const CLUSTER_TOLERANCE_RATIO = 0.5;
+
+/** A group spanning more than this × its tallest glyph isn't one line. */
+const MAX_LINE_SPAN_RATIO = 3;
+/** Fall back to clustering only past this share of implausible groups. */
+const MAX_IMPLAUSIBLE_LINE_SHARE = 0.25;
 
 // ---------------------------------------------------------------------------
 // Entry point
@@ -102,38 +102,25 @@ const MAX_IMPLAUSIBLE_LINE_SHARE = 0.25;
 /**
  * Extract one page.
  *
- * CALL SITE MATTERS — read before wiring.
+ * ⚠ CALL SITE MATTERS. Run this ONCE PER DOCUMENT AT LOAD, over every page —
+ * never per render. doc.getPage(n) returns a CACHED proxy that PdfPage calls
+ * cleanup() on, and cleanup() can free font data out from under an in-flight
+ * getTextContent(). run-extraction.ts calls this in the one window where nothing
+ * else holds a page proxy. EXPLAINER §7.4.
  *
- * Run this ONCE PER DOCUMENT AT LOAD, over every page. Not per render.
- * App renders one page at a time (§6.15), but the copilot panel is the
- * substitute for scrolling and must list fields on pages the user has never
- * opened. Extraction driven by PdfPage would fill the panel page by page as
- * the user navigates, which defeats the point of having a panel.
- *
- * THE HAZARD: doc.getPage(n) returns a CACHED proxy. PdfPage already calls
- * page.cleanup() on it after canvas render resolves, and PdfTextLayer streams
- * text from it separately. That was two consumers and one owner of cleanup
- * (§6.14); this makes three, and cleanup() can free font data out from under
- * an in-flight getTextContent().
- *
- * The cheapest fix is to run extraction before the first PdfPage mounts —
- * App already awaits loadPdf() before setting state, so there is a window
- * where nothing else holds a page proxy. Doing it there costs no new state
- * anywhere, which is the property to preserve: §6.14 warns that wanting to
- * coordinate render lifecycle through shared state is a signal something else
- * is wrong.
+ * ⚠ Scale 1 = PDF points. This must never accept the viewer's zoom; its output
+ * feeds the store, and the store is zoom-independent.
  */
 export async function extractPageText(
     page: PDFPageProxy,
     pageNumber: number,
 ): Promise<ExtractedPage> {
-    // Scale 1 = PDF points. This function must never accept the viewer's zoom;
-    // its output feeds the store, and the store is zoom-independent (§6.9).
     const viewport = page.getViewport({ scale: 1 });
 
     const { items } = await page.getTextContent();
     const built = buildLines(items, pageNumber);
     const lines = sortIntoReadingOrder(built.runGroups.map(orderLine));
+
     return {
         pageNumber,
         width: viewport.width,
@@ -142,7 +129,6 @@ export async function extractPageText(
         lineSource: built.source,
         quality: lines.length > 0 ? "ok" : "empty",
         letters: countLetters(lines),
-
     };
 }
 
@@ -153,50 +139,31 @@ export async function extractPageText(
 /**
  * Split the item stream into visual lines.
  *
- * WHY hasEOL AND NOT y-CLUSTERING — this was measured, not assumed.
- *
  * pdf.js emits a zero-width item with str === "" carrying hasEOL at the end of
- * every line: 50 / 47 / 23 of them across the three pages, and they account for
- * every hasEOL in the document bar one (the two-line title, which ends on real
- * text). They ARE the line breaks. Filtering them out before grouping throws
- * away the line structure and forces you to rebuild it from geometry.
+ * every line. Those items ARE the line breaks, and splitting on them beats
+ * y-clustering for measured reasons — so there is no tolerance constant on this
+ * path at all. EXPLAINER §3.1.
  *
- * Rebuilding it from geometry is strictly worse here:
- *   - Superscripts sit ~3pt off the baseline (`*תשומת לבך` and the `; קוד`
- *     line both do). Any tolerance tight enough to keep adjacent table cells
- *     apart splits those; the content stream keeps them together correctly.
- *   - On page 2 the rotated margin word סטודיו shares a baseline with the
- *     שליחת דבר פרסומת heading. Geometry cannot separate unrelated content
- *     that happens to land on the same y. The stream can.
- *
- * So: split on hasEOL, drop the empty delimiters, and there is no tolerance
- * constant anywhere in this file.
- *
- * NOTE the two different empty-ish strings, because the filter below turns on
- * the distinction. `str === ""` is a line break and gets dropped. `str === " "`
- * is a run of real whitespace on the page and MUST survive: every blank on
- * this form is a whitespace run followed by a large positional gap, and that
- * is the entire input to detect-blanks.ts. Widening this filter to
- * `!str.trim()` would silently delete Phase 2's only signal.
+ * ⚠⚠ TWO DIFFERENT EMPTY-ISH STRINGS, and the distinction is load-bearing.
+ * `str === ""` is a delimiter and gets dropped. `str === " "` is REAL whitespace
+ * printed on the page and MUST survive: a whitespace run followed by a large
+ * positional gap is how a write-in blank is detected. Widening this filter to
+ * `!str.trim()` looks tidier and silently deletes that signal.
  */
 function splitIntoLines(items: (TextItem | TextMarkedContent)[]): Run[][] {
     const lines: Run[][] = [];
     let current: Run[] = [];
 
     items.forEach((item, index) => {
-        // TextMarkedContent has no transform. The fixture produces none, so a
-        // wrong guard passes here and throws on the first document that has any.
+        // TextMarkedContent has no transform, so this guard must come first.
         if (!("transform" in item)) return;
 
-        // Rotated text: the vertical margin stamp (הראל / סטודיו / 51305.7 /
-        // 03/2026) on every page. Normal text has transform [9,0,0,9,x,y];
-        // rotated has [0,8.29,-8.29,0,x,y]. No heuristic needed.
+        // Rotated text: on these documents it's the printer's margin stamp, worth
+        // nothing to the model. Normal text is [9,0,0,9,x,y]; rotated is
+        // [0,8.29,-8.29,0,x,y], so no heuristic is needed.
         //
-        // Dropped rather than flagged because on this document it's the print
-        // ID stamp and worth nothing to the model. That is a decision about
-        // THIS fixture: a rotated *field* would matter, and §7.2 notes vertical
-        // margin text extracts fine. If a rotated form field ever shows up,
-        // this is the line to revisit.
+        // ⚠ Dropped rather than flagged, which is a decision about THESE
+        // documents — a rotated FIELD would matter. This is the line to revisit.
         if (isRotated(item.transform)) return;
 
         if (item.str !== "") current.push(toRun(item, index));
@@ -213,11 +180,17 @@ function splitIntoLines(items: (TextItem | TextMarkedContent)[]): Run[][] {
     return lines;
 }
 
+/**
+ * The content stream is NOT in reading order — producers write one text frame at
+ * a time, in creation order. y-descending fixes it; a stable sort keeps lines
+ * sharing a baseline in stream order for free.
+ *
+ * ⚠ Frame grouping was tried and fails — don't re-attempt. Known limit:
+ * two-column pages interleave. EXPLAINER §3.3.
+ */
 function sortIntoReadingOrder(lines: Line[]): Line[] {
     return [...lines].sort((a, b) => b.y - a.y);
 }
-
-
 
 function countLetters(lines: Line[]): { latin: number; rtl: number } {
     const text = lines.map((line) => line.text).join("");
@@ -250,18 +223,14 @@ function toRun(item: TextItem, sourceIndex: number): Run {
 }
 
 // ---------------------------------------------------------------------------
-// Reading order
+// Reading order within a line
 // ---------------------------------------------------------------------------
 
 /**
  * Put one line's runs into logical order and record its direction.
  *
- * Raw pdf.js order is x-ascending, which for Hebrew is exactly backwards. The
- * עמית table header arrives as
- *     [תאריך לידה] [מס' הזהות] [שם פרטי] [שם משפחה]
- * and reads
- *     [שם משפחה] [שם פרטי] [מס' הזהות] [תאריך לידה]
- * Confirmed on both v4 and v6.
+ * Raw pdf.js order is x-ascending, which for Hebrew is exactly backwards — a
+ * table header arrives with its last column first. EXPLAINER §3.3.
  */
 function orderLine(runs: Run[]): Line {
     const dir = lineDirection(runs);
@@ -278,25 +247,75 @@ function orderLine(runs: Run[]): Line {
         hasSuspectText: runs.some((r) => r.suspectRanges.length > 0),
     };
 }
+
+/**
+ * A line is RTL if it contains ANY strong RTL character.
+ *
+ * ⚠⚠ NOT "the first strong character", which is the textbook rule and is what
+ * editor/export.ts uses. The textbook rule needs the string already in logical
+ * order, and logical order is what this function is being asked to produce —
+ * circular. Export escapes the circle because by then the string IS in logical
+ * order. The two rules answer different questions; don't unify them.
+ * EXPLAINER §3.4.
+ *
+ * ⚠ Digits and punctuation count as neither: lines routinely start with a lone
+ * space, a stray ".", or a date, and pdf.js calls all of them "ltr".
+ *
+ * Known limit: a mostly-English line with one Hebrew word comes out RTL. If that
+ * starts occurring, count strong characters by class rather than testing presence.
+ */
+function lineDirection(runs: Run[]): "ltr" | "rtl" {
+    const joined = runs.map((r) => r.text).join("");
+
+    if (STRONG_RTL.test(joined)) return "rtl";
+    if (STRONG_LTR.test(joined)) return "ltr";
+
+    return runs[0]?.dir ?? "ltr";
+}
+
+// ---------------------------------------------------------------------------
+// The hasEOL guard
+// ---------------------------------------------------------------------------
+
+/**
+ * A line is text sharing a baseline, so measure that: a group's vertical spread
+ * against its own tallest glyph.
+ *
+ * ⚠ An items-per-line ratio was tried first and is WRONG — do not restore it. It
+ * measures how aggressively the producer merged runs, not whether splitting
+ * worked, and false-positived on ordinary documents. EXPLAINER §3.2.
+ *
+ * The 9pt fallback guards zero-height whitespace items; dividing by zero would
+ * condemn every line containing one.
+ */
 function isImplausibleLine(runs: Run[]): boolean {
     const ys = runs.map((r) => r.y);
     const span = Math.max(...ys) - Math.min(...ys);
-
-    // 9pt fallback: some producers emit zero-height whitespace items, and
-    // dividing by zero would condemn every line containing one.
     const tallest = Math.max(...runs.map((r) => r.height || 9), 1);
 
     return span > tallest * MAX_LINE_SPAN_RATIO;
 }
 
+/**
+ * Split on hasEOL, and fall back to y-clustering only when the result is
+ * implausible.
+ *
+ * ⚠ THE FAILURE THIS GUARDS AGAINST IS SILENT: a PDF from Word, LaTeX or a
+ * scanner may emit no hasEOL at all, and then splitIntoLines returns ONE LINE PER
+ * PAGE with no error — the payload becomes a few enormous strings and nothing
+ * looks broken. On the fallback path text degrades slightly and PLACEMENT
+ * DEGRADES BADLY, because merged lines have wildly wrong extents. If marks look
+ * hundreds of points out on an unfamiliar PDF, check lineSource first.
+ * EXPLAINER §3.2.
+ */
 function buildLines(
     items: (TextItem | TextMarkedContent)[],
     pageNumber: number,
 ): BuiltLines {
     const eolGroups = splitIntoLines(items);
 
-    // Nothing on the page — blank, or image-only. Not a failure, and there is
-    // nothing for clustering to do differently.
+    // Nothing on the page — blank or image-only. Not a failure, and clustering
+    // would do nothing differently.
     if (eolGroups.length === 0) return { runGroups: [], source: "eol" };
 
     const implausible = eolGroups.filter(isImplausibleLine).length;
@@ -304,10 +323,8 @@ function buildLines(
 
     if (share <= MAX_IMPLAUSIBLE_LINE_SHARE) return { runGroups: eolGroups, source: "eol" };
 
-    // Worst offender in the message: a document with no hasEOL at all shows a
-    // ratio in the dozens, while a marginal case shows 3 or 4. That number is
-    // the difference between "the guard is working" and "the threshold needs
-    // looking at", and it costs one line to print.
+    // The worst ratio distinguishes "the guard is working" (dozens) from "the
+    // threshold needs looking at" (3 or 4), and costs one line to print.
     const worst = Math.max(
         ...eolGroups.map((runs) => {
             const ys = runs.map((r) => r.y);
@@ -332,9 +349,8 @@ function clusterIntoLines(items: (TextItem | TextMarkedContent)[]): Run[][] {
     items.forEach((item, index) => {
         if (!("transform" in item)) return;
         if (isRotated(item.transform)) return;
-        // Same distinction as the primary path: "" is a delimiter and is
-        // dropped, " " is real whitespace on the page and must survive,
-        // because a whitespace run followed by a large gap IS a blank (§8.8).
+        // ⚠ Same distinction as the primary path: "" is a delimiter, " " is real
+        // whitespace and must survive.
         if (item.str === "") return;
 
         runs.push(toRun(item, index));
@@ -354,9 +370,8 @@ function clusterIntoLines(items: (TextItem | TextMarkedContent)[]): Run[][] {
 
             current = [run];
             baseline = run.y;
-            // Fall back to 9pt when height is missing or zero — some producers
-            // emit height 0 for whitespace-only items, and a zero tolerance
-            // would put every one of them on its own line.
+            // 9pt fallback: a zero tolerance would put every zero-height
+            // whitespace item on its own line.
             tolerance = Math.max(run.height || 9, 1) * CLUSTER_TOLERANCE_RATIO;
             continue;
         }
@@ -368,72 +383,33 @@ function clusterIntoLines(items: (TextItem | TextMarkedContent)[]): Run[][] {
 
     return lines;
 }
-/**
- * A line is RTL if it contains any strong RTL character; otherwise LTR if it
- * contains any strong LTR one; otherwise fall back to pdf.js's own call.
- *
- * WHY THIS ISN'T "the first strong character", which is the textbook rule and
- * is what editor/export.ts uses (§6.2): the textbook rule needs the string in
- * logical order, and logical order is what this function is being asked to
- * produce. Circular. Export escapes the circle because by then the string
- * already exists in logical order — that's why the two rules differ, and why
- * they must not be "unified" without noticing they answer different questions.
- *
- * Digits and punctuation are excluded from both classes on purpose. Lines here
- * routinely start with a lone space, a stray ".", or the digits of a date, and
- * pdf.js reports dir "ltr" for all of them. None is evidence about the line.
- *
- * KNOWN LIMIT: a predominantly English line containing one Hebrew word comes
- * out RTL. It doesn't occur on this document. If it starts occurring, count
- * strong characters by class rather than testing for presence.
- */
-function lineDirection(runs: Run[]): "ltr" | "rtl" {
-    const joined = runs.map((r) => r.text).join("");
-
-    if (STRONG_RTL.test(joined)) return "rtl";
-    if (STRONG_LTR.test(joined)) return "ltr";
-
-    return runs[0]?.dir ?? "ltr";
-}
 
 // ---------------------------------------------------------------------------
-// Extraction quality (§6.7)
+// Extraction quality
 // ---------------------------------------------------------------------------
 
 /**
- * Find character ranges whose text cannot be trusted.
+ * Find character ranges whose text cannot be trusted — a partially-populated
+ * ToUnicode table makes some glyphs extract as the wrong character. The offset
+ * isn't consistent in sign, so no repair is possible; only disclosure.
+ * EXPLAINER §3.5.
  *
- * Measured, not assumed:
- *   - Every Hebrew character in this document extracts correctly, all 3 pages.
- *   - Only Latin is ever corrupted. Six words, all on page 2.
- *   - NOT per-font. g_d0_f2 gives 44 clean Hebrew runs and 3 broken Latin ones.
- *     g_d0_f1 gives "HSBC" correctly and "Qo" (truly "QR") wrongly — same font,
- *     same page. A partially-populated ToUnicode table.
- *   - The offset isn't consistent in sign: p→S is −29, R→o is +29. No repair is
- *     possible. Only disclosure.
+ * ⚠ RANGES, NOT A BOOLEAN. pdf.js v6 merges runs, so corrupted Latin sits inside
+ * otherwise-perfect Hebrew items. A per-run boolean would either condemn forty
+ * good words to flag two bad ones, or clear the bad ones because the run is
+ * mostly fine.
  *
- * RANGES, NOT A BOOLEAN, and that's the v6 change: because v6 merges runs,
- * corrupted Latin now lives inside otherwise-perfect Hebrew items. Page 2 emits
- * `; קוד Qo:` as ONE item, and the bank line arrives as a full clean Hebrew
- * sentence with `HSBC` inside it. A per-run boolean would either condemn forty
- * good Hebrew words to flag two bad Latin ones, or clear the bad ones because
- * the run is mostly fine.
+ * ⚠ THE TOKENIZER MUST BE /[A-Za-z]+/g, NOT \b-ANCHORED. Corrupted text like
+ * `il.co.iQs-harHl@1uQsubscribH` has no word boundary before `u` because a digit
+ * precedes it, and the \b version silently finds one word fewer.
  *
- * THE RULE: an uppercase letter immediately after a lowercase one, inside a
- * single alphabetic word. Verified against every Latin word in the document —
- * flags httSs, harHl, grouS, uQsubscribH, iQs; passes HSBC, mfax, harel, ins,
- * www, co, il. Zero false positives, which is the number that matters: HSBC
- * sits in the bank-details section, the one place on this form where a wrong
- * value costs the user money.
+ * ⚠ This rule CANNOT run on an English document — it flags SaaS, macOS, iPhone.
+ * detect-field.ts gates it on the document's Latin share; this function is
+ * unconditional and only reports evidence.
  *
- * KNOWN MISSES, both acceptable and both worth knowing before demo day:
- *   - "Qo" (truly "QR") — uppercase-then-lowercase, which is also what every
- *     legitimately capitalised word looks like. Catching it means flagging
- *     "Harel". Two characters, a QR-code label, no financial meaning.
- *   - The short-link codes X69C7B and 408YB6 are corrupted (they should read
- *     XSVCTB and 4Q8YB6) but carry no case pattern to detect. Mixed
- *     alphanumeric codes are undetectable in principle here — worth saying out
- *     loud rather than trusting a clean flag to mean clean text.
+ * Known misses, both accepted: uppercase-then-lowercase corruption is
+ * indistinguishable from ordinary capitalisation, and mixed alphanumeric codes
+ * carry no case pattern at all. A clean flag does not mean clean text.
  */
 function findSuspectRanges(text: string): TextRange[] {
     const ranges: TextRange[] = [];
@@ -449,15 +425,9 @@ function findSuspectRanges(text: string): TextRange[] {
 }
 
 /**
- * DELIBERATELY ABSENT: a page-level "suspect" verdict.
+ * ⚠ DELIBERATELY ABSENT: a page-level "suspect" verdict.
  *
- * On this document the corruption is entirely in the fine print, while the
- * field labels — the only text blank detection reads — are clean. A page-level
- * flag would make the copilot disclaim a page it read perfectly well, which
- * demos worse than saying nothing.
- *
- * The question worth answering isn't "is this page suspect" but "is any text
- * the copilot RELIED ON suspect", and this file can't answer that because it
- * doesn't know which lines get used. It reports evidence; detect-blanks.ts
- * draws the conclusion.
+ * The useful question isn't "is this page suspect" but "is any text the copilot
+ * RELIED ON suspect", and this file cannot answer that — it doesn't know which
+ * lines get used. It reports evidence; detect-field.ts draws the conclusion.
  */

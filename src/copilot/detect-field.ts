@@ -1,44 +1,21 @@
 /**
  * copilot/detect-field.ts
  *
- * Joins extract-text.ts (lines) to extract-geometry.ts (drawn shapes) and
- * produces the two things the rest of Phase 2 needs:
+ * Joins extract-text.ts (lines) to extract-geometry.ts (drawn shapes) and emits
+ * the two things Phase 2 needs:
  *
- *   1. A PAYLOAD for the model — text only, plus a small semantic tag saying
- *      "this line has a checkbox" or "this line has a 9-cell field". No
- *      coordinates ever.
- *   2. A CLIENT MAP — for each line, where a mark would go if the model says
- *      to put one there. Coordinates only, never sent anywhere.
+ *   1. A PAYLOAD for the model — text plus a small semantic tag. No coordinates.
+ *   2. A CLIENT MAP — where a mark would go if the model says to mark a line.
+ *      Coordinates only, never sent anywhere.
  *
- * ─── RENAMED FROM detect-blanks.ts, ON PURPOSE ───────────────────────────
- * §7.1 called this "blank detection" and described it as finding the blanks
- * and sending that list to the model. That design makes geometry a GATE: no
- * shape found, no field, no advice. The fixture disproves it — section ב has
- * nine eligibility clauses and only eight checkboxes, so a gated design
- * silently drops a real option. And no geometric rule can ever handle a
- * heading that says "mark the relevant options below."
+ * ⚠ THIS FILE ONLY ENRICHES. Geometry never gates discovery: if every detector
+ * here returns nothing, every field is still found, explained and listed — only
+ * placement degrades. Preserve that property when editing. EXPLAINER §4.1.
  *
- * So the model sees the WHOLE document text and decides what the fields are.
- * This file only enriches. If every detector here returns nothing, the copilot
- * still works: every field is still found, still explained, still listed. Only
- * mark placement degrades. Preserve that property when editing.
- *
- * ─── WHAT GOES TO THE MODEL, AND WHAT NEVER DOES ─────────────────────────
- * Coordinates never go. The model can do nothing with x: 544.3, and mapping an
- * answer to a position is this codebase's job — that is the whole reason local
- * extraction exists (§3).
- *
- * Cell counts DO go, because they change the answer. "Nine cells, one
- * character each" makes the model return nine digits; a six-cell date field
- * wants DDMMYY and an eight-cell one wants DDMMYYYY. It cannot know which
- * without being told, and the text layer does not contain it.
- *
- * ABSENCE IS NEVER ASSERTED. A line either carries a tag or carries nothing,
- * and nothing means UNKNOWN, not "no checkbox here". If geometry extraction
- * fails wholesale, every line is untagged and the model simply reasons from
- * the Hebrew — which it does well. Telling it "no checkbox on this line" when
- * the detector merely broke would have it confidently instruct the user to
- * write on a line that has a box.
+ * ⚠ ABSENCE IS NEVER ASSERTED. A line carries a tag or carries nothing, and
+ * nothing means UNKNOWN, not "no checkbox here". Telling the model "no checkbox
+ * on this line" when the detector merely broke would have it confidently
+ * instruct the user to write on a line that has a box.
  */
 
 import type { ExtractedPage, Line, Run } from "./extract-text";
@@ -51,17 +28,13 @@ import type { CombField, DocumentGeometry, GeometryRect } from "./extract-geomet
 export type AffordanceKind = "checkbox" | "cells" | "writeIn";
 
 /**
- * Which detector decided where this mark goes.
+ * Which detector decided where a mark goes. Diagnostics only.
  *
- * Diagnostics only, and deliberately on FieldGeometry rather than
- * DetectedField: DetectedField is uploaded to the model, and the model can do
- * nothing with "a gap detector found this" (§3.2).
- *
- * The reason it exists: `literalBlanks` and `hasWideGap` BOTH emit
- * kind: "writeIn", so the panel badge cannot tell them apart. §8.20 claimed
- * literalBlanks had fired on the W-9 because line 3b showed dots and a badge.
- * The histogram disproved it — the badge was "gap", and literalBlanks has
- * still never matched anything (§8.24).
+ * ⚠ On FieldGeometry, not DetectedField — DetectedField is uploaded, and the
+ * model can do nothing with "a gap detector found this". It exists because two
+ * detectors both emit kind "writeIn", so a tag alone cannot tell them apart —
+ * and a tag with no provenance cannot confirm the detector that produced it.
+ * EXPLAINER §9.6.
  */
 export type MarkSource =
     | "checkbox"    // a drawn checkbox matched to this line
@@ -74,25 +47,17 @@ export type MarkSource =
 /**
  * One field found on a line.
  *
- * ⚠ A LINE CAN CARRY SEVERAL. Page 1's עמית table puts four column labels on a
- * single line — שם משפחה, שם פרטי, מס' הזהות, תאריך לידה — with a 6-cell comb
- * and a 9-cell comb beneath it. An earlier version keyed affordances by line
- * and silently kept only the first, dropping the ID number field entirely.
- * That bug was invisible until the pipeline was run end to end and the comb
- * tags were counted (4 emitted, 5 detected).
- *
- * The same omission survived in matchCheckboxes for two further sessions and
- * was only caught by counting: W-9 line 3a carries FIVE checkboxes and one
- * extracted line, and the smoke histogram reported checkbox: 4 against 8 boxes
- * detected document-wide (§8.22).
+ * ⚠ A LINE CAN CARRY SEVERAL — four column labels with two combs beneath, or a
+ * row of five checkboxes. Affordances belong to RUNS, not lines, and any map
+ * keyed by line id silently keeps one and drops the rest. EXPLAINER §4.4.
  */
 export interface DetectedField {
     /** Stable id the model quotes back, e.g. "p1l3f0". Keys `geometry`. */
     ref: string;
     kind: AffordanceKind;
-    /** Character count, `cells` only. */
+    /** Character count, `cells` only. Changes the model's answer. */
     count?: number;
-    /** The specific run labelling this field, when it's narrower than the line. */
+    /** The specific run labelling this field, when narrower than the line. */
     label?: string;
 }
 
@@ -103,60 +68,44 @@ export interface PayloadLine {
     text: string;
     /** Omitted when nothing was detected. Never present as a negative claim. */
     fields?: DetectedField[];
-    /** True when part of this line's text failed the readability check (§6.7). */
+    /** Part of this line's text failed the readability check. */
     unreliableText?: true;
 }
 
-/** What the client keeps. Coordinates only; never serialised to a provider. */
+/** What the client keeps. Coordinates only; never serialised. EXPLAINER §5.1. */
 export interface FieldGeometry {
     id: string;
     page: number;
     /** Where to place a mark if the model says to mark this line. */
     markRect: GeometryRect;
     /**
-     * False when markRect was computed from the calibrated offset rather than
-     * from a shape actually found on this line. The UI can say "no box printed
-     * on the form" — a fact we hold, not a guess the model made.
+     * False when markRect came from the calibrated offset rather than a shape
+     * found on this line. Lets the UI say "no box printed on the form" — a fact
+     * we hold, not a guess the model made.
      */
     fromDrawnShape: boolean;
-    /** Which detector produced markRect. Diagnostics only; never serialised. */
+    /** Which detector produced markRect. Diagnostics only. */
     source: MarkSource;
     /**
-     * Reading direction of the LINE this field was matched to.
+     * Reading direction of the LINE this field was matched to, copied off
+     * Line.dir.
      *
-     * Copied straight off `Line.dir` — the same value edgeDistance, labelRun
-     * and offsetMark already use to decide which side of the text a mark goes
-     * on (§8.9). It is here so the UI can anchor a caption on the side the
-     * text comes from without re-deriving direction from a coordinate:
-     * `markRect.x > pageWidth / 2` is the obvious proxy and it is wrong on the
-     * 9-cell מס' הזהות comb, whose left-hand cells sit on the other side of
-     * the midpoint from the rest of the same comb (§8.37).
+     * ⚠ NOT derived from the coordinate. `markRect.x > pageWidth / 2` is the
+     * obvious proxy and it is wrong on a wide comb, whose left-hand cells sit the
+     * other side of the midpoint from the rest of the same comb. EXPLAINER §6.4.
      *
-     * ⚠ REQUIRED, NOT OPTIONAL, on purpose. Miss one of the five map.set calls
-     * below and strict mode names the line. An optional field would silently
-     * default to LTR at exactly the call site that forgot it, and an
-     * LTR-anchored caption on a Hebrew form is the bug this exists to fix —
-     * arriving on one detector only, which is the hardest kind to see.
-     *
-     * Client-side only, like every other field here. Never serialised (§3.2).
+     * ⚠ REQUIRED, not optional: miss one map.set below and strict mode names the
+     * line. Optional would silently default to LTR at exactly the call site that
+     * forgot it — the bug this exists to fix, on one detector only.
      */
     dir: "ltr" | "rtl";
     /**
-     * The whole LINE's extent on the page, not this field's.
-     *
-     * markRect answers "where does a mark go" and is nine points wide on a
-     * checkbox line — useless as a highlight. This answers "where is the line
-     * the panel row is about", which is what a user needs when they click a
-     * row for a verdict that draws no marker: every skip, every unclear, and
-     * every fill where resolveRect refused to guess between five identical
-     * boxes (§9.4 rule 3).
-     *
-     * Same rules as everything else here: client-side only, never serialised,
-     * derived from the line the field was matched to rather than measured
-     * again. Required rather than optional for the reason given on `dir`.
+     * The whole LINE's extent, not this field's — markRect is nine points wide on
+     * a checkbox line and useless as a highlight. This is what the focus band
+     * draws when a row has a verdict but no marker. EXPLAINER §6.3.
      */
     lineRect: GeometryRect;
-    /** Per-cell rects, left to right, when this is a comb. See the RTL warning. */
+    /** Per-cell rects, left to right, when this is a comb. See cellRects. */
     cells?: GeometryRect[];
 }
 
@@ -174,34 +123,27 @@ export interface DetectionResult {
 /** A shape and a baseline within this many points are on the same line. */
 const SAME_LINE_BAND = 6;
 
-/**
- * How far above a comb its label may sit. Two line-heights: on this fixture
- * the label is 13.9–15.8pt up, with an intervening line in section ד.
- */
+/** How far above a comb its label may sit. Two line-heights. */
 const LABEL_SEARCH_HEIGHT = 40;
 
 /** Minimum horizontal overlap for a run to count as a comb's label. */
 const LABEL_MIN_OVERLAP = 2;
 
 /**
- * How far a checkbox's label may sit behind it before the box is treated as
- * unlabelled. Wide enough for the space between a box and its text on any
- * reasonable form, narrow enough that a box at the end of a line doesn't claim
- * the next option's label.
+ * How far a checkbox's label may sit from it before the box counts as
+ * unlabelled — narrow enough that a box at the end of a line doesn't claim the
+ * next option's label.
  */
 const LABEL_MAX_GAP = 40;
 
-/**
- * How far a label may overlap its box before it is judged to be on the wrong
- * side. A fraction of a point of overlap is rounding, not evidence.
- */
+/** Overlap below this is rounding, not evidence of the wrong side. */
 const LABEL_OVERLAP_TOLERANCE = 1;
 
 /**
- * Fallback offset from a line's edge to its mark, used only when nothing was
- * calibrated. Measured at 2.44–2.75pt on the fixture, but the calibrated value
- * is always preferred — this exists so a total geometry failure still places
- * marks somewhere sane rather than on top of the text.
+ * Used only when nothing could be calibrated, so marks still land somewhere sane
+ * rather than on top of the text.
+ *
+ * ⚠ Seeing this value in markOffset means calibration found no boxes at all.
  */
 const FALLBACK_MARK_OFFSET = 3;
 
@@ -211,15 +153,10 @@ const DEFAULT_MARK_SIZE = 9;
 const LATIN_SHARE_DISABLING_CORRUPTION_CHECK = 0.15;
 
 /**
- * ⚠ THESE HAVE NEVER MATCHED ANYTHING. See §8.24.
- *
- * The thresholds are correct — set by what they must NOT match (`...`
- * ellipsis, `1.1.2008`, `co-op`, `well-known`) — but literalBlanks tests them
- * against each RUN separately, and a dot leader extracts as one run per dot.
- * W-9 line 3b is 19 runs: ["…See instructions", " ", ".", " ", ".", …]. The
- * longest string ever tested is ".". Fixing it means matching against
- * line.text and mapping offsets back to runs; deferred because the same blanks
- * are already found by hasWideGap and only the exact rect differs.
+ * ⚠ Thresholds are set by what they must NOT match — `...`, `1.1.2008`, `co-op`.
+ * They are correct; the limitation is that literalBlanks tests them per RUN, and
+ * a dot leader extracts as one run per dot. Fires only on forms that type their
+ * blanks as a single run. EXPLAINER §10.
  */
 const LITERAL_BLANK_PATTERNS: RegExp[] = [
     /_(?:\s?_){2,}/g,
@@ -238,9 +175,12 @@ export function detectFields(
     const payload: PayloadLine[] = [];
     const map = new Map<string, FieldGeometry>();
 
-    // Calibrate first, across the whole document. See calibrateMarkOffset.
+    // Calibrate first, across the whole document.
     const offset = calibrateMarkOffset(pages, geometry);
     const markSize = geometry.checkboxSize ?? DEFAULT_MARK_SIZE;
+
+    // Document-level, not per page, so an English appendix inside a Hebrew form
+    // is still checked. EXPLAINER §3.5.
     const latin = pages.reduce((n, p) => n + p.letters.latin, 0);
     const rtl = pages.reduce((n, p) => n + p.letters.rtl, 0);
     const totalLetters = latin + rtl;
@@ -258,12 +198,11 @@ export function detectFields(
             const id = `p${page.pageNumber}l${index}`;
             const fields: DetectedField[] = [];
 
-            // Once per line, shared by every field on it. Cheap, and it means
-            // the highlight for a multi-field line is the same rect whichever
-            // field the user's row click resolved to.
+            // Once per line, shared by every field on it — so the focus band is
+            // the same rect whichever field a row click resolved to.
             const bounds = lineBounds(line);
 
-            // Combs first and possibly several — see DetectedField's comment.
+            // Combs, possibly several on one line.
             for (const { comb, label } of combs.get(line) ?? []) {
                 const ref = `${id}f${fields.length}`;
 
@@ -280,10 +219,9 @@ export function detectFields(
                 });
             }
 
-            // Checkboxes, also possibly several. W-9 line 3a carries five, and
-            // each needs its own ref: one verdict against five identical rects
-            // puts the mark on whichever box happened to be drawn first, on a
-            // row where nobody would notice (§8.22).
+            // Checkboxes, also possibly several. Each needs its own ref, or one
+            // verdict against five identical rects marks whichever box happened
+            // to be drawn first. EXPLAINER §4.4.
             for (const { box, run } of checkboxes.get(line) ?? []) {
                 const ref = `${id}f${fields.length}`;
                 const label = run?.text.trim();
@@ -303,9 +241,8 @@ export function detectFields(
             const leader = leaders.get(line);
             const literals = literalBlanks(line);
 
-            // Literal blanks are per-blank, so they emit one field each. A
-            // drawn leader or a text gap still emits a single field for the
-            // line — neither of those detectors can tell two blanks apart.
+            // Literal blanks emit one field each; a leader or a text gap emits one
+            // per line, because neither can tell two blanks apart.
             for (const rect of literals) {
                 const ref = `${id}f${fields.length}`;
 
@@ -314,9 +251,8 @@ export function detectFields(
                     id: ref,
                     page: page.pageNumber,
                     markRect: rect,
-                    // True: an underscore run is ink actually printed on the
-                    // form, not a calibrated guess. The flag means "we know
-                    // where this goes", not "a vector shape was found".
+                    // True: an underscore run is ink printed on the form. The flag
+                    // means "we know where this goes", not "a vector shape exists".
                     fromDrawnShape: true,
                     source: "literal",
                     dir: line.dir,
@@ -349,15 +285,14 @@ export function detectFields(
                     : {}),
             });
 
-            // Every line also gets a fallback entry under its own id, so a line
-            // the model calls a field with no shape detected on it — the
-            // התחלתי לעבוד clause, which has no checkbox printed — still has
-            // somewhere to put a mark. This is what calibration is for.
+            // ⚠ EVERY line gets a fallback entry under its own id, so a line the
+            // model calls a field with no shape detected on it still has somewhere
+            // to put a mark — and the focus band has a rect for every row.
             //
-            // The guard can never fail: refs are `p1l3f0` and this key is
-            // `p1l3`, so they cannot collide. Kept as documentation of that
-            // fact. Do NOT "fix" it into skipping lines that already have
-            // fields — the fallback existing for EVERY line is the point.
+            // The guard can never fail (refs are `p1l3f0`, this key is `p1l3`) and
+            // is kept as documentation of that. Do NOT "fix" it into skipping
+            // lines that already have fields — the fallback existing for every
+            // line is the point. EXPLAINER §4.3, §6.3.
             if (!map.has(id)) {
                 map.set(id, {
                     id,
@@ -385,11 +320,8 @@ export function detectFields(
 // ---------------------------------------------------------------------------
 
 /**
- * One checkbox and the text run it sits beside.
- *
- * Carries the RUN, not just its text, because calibrateMarkOffset needs its
- * geometry. CombMatch carries only a string — a comb is labelled by a run
- * ABOVE it, and that vertical relationship is not what calibration measures.
+ * One checkbox and the text run it sits beside. Carries the RUN, not just its
+ * text, because calibrateMarkOffset needs its geometry.
  */
 export interface CheckboxMatch {
     box: GeometryRect;
@@ -400,20 +332,13 @@ export interface CheckboxMatch {
 /**
  * Attach each checkbox to the line it belongs to.
  *
- * Nearest-baseline alone is NOT enough and gets a real case wrong. On page 1
- * the box beside `משיכה חלקית` (baseline 195.3) is 2.4pt from that line and
- * 2.3pt from the sidebar promo line `בקופת גמל לפרטים` at 196.5 — the promo
- * line wins on distance and the box attaches to an advert.
+ * ⚠ Nearest-baseline alone is NOT enough. A box 2.4pt from its real line can be
+ * 2.3pt from an unrelated sidebar line, which then steals it. The tiebreak is
+ * horizontal: among lines in the vertical band, pick the one whose text EDGE is
+ * nearest. EXPLAINER §4.5.
  *
- * The tiebreak is horizontal: a checkbox sits just outside its line's text
- * edge, 2.44–2.75pt on this document. The promo line's edge is 352pt away.
- * So among lines in the vertical band, pick the one whose edge is nearest.
- *
- * ⚠ RETURNS AN ARRAY PER LINE. The previous version returned one box per line
- * and dropped the rest, which was invisible on Harel — no Harel line carries
- * two boxes — and loses four of the five options on W-9 line 3a. Measured, not
- * reasoned: the smoke histogram reported checkbox: 4 against 8 boxes detected
- * document-wide (§8.22). This mirrors what matchCombs has done since §8.12.
+ * ⚠ RETURNS AN ARRAY PER LINE. One box per line loses four of five options on a
+ * multi-option row, and is invisible on a form where no line carries two.
  */
 function matchCheckboxes(
     lines: Line[],
@@ -445,8 +370,8 @@ function matchCheckboxes(
         else matched.set(best, [match]);
     }
 
-    // Reading order within each line, so the model is offered five options in
-    // the order a human reads them. Right to left on an RTL line.
+    // Reading order within the line, so the model is offered the options in the
+    // order a human reads them. Right to left on an RTL line.
     for (const [line, matches] of matched) {
         matches.sort((a, b) => (line.dir === "rtl" ? b.box.x - a.box.x : a.box.x - b.box.x));
     }
@@ -457,15 +382,12 @@ function matchCheckboxes(
 /**
  * The run a checkbox labels: the nearest one on the side the text runs toward.
  *
- * LTR — text follows the box, so look right. RTL — text precedes it, so look
- * left. The same asymmetry as edgeDistance, for the same reason, and getting
- * it backwards labels every box with its NEIGHBOUR's text — which reads
- * perfectly plausibly on a row of similar options and is exactly the class of
- * silent wrong answer §8.11 warns about.
+ * ⚠ LTR looks RIGHT, RTL looks LEFT. Getting this backwards labels every box
+ * with its NEIGHBOUR's text, which reads perfectly plausibly on a row of similar
+ * options — the exact class of silently-wrong answer to fear. EXPLAINER §4.5.
  *
- * Returns null rather than a distant run. An unlabelled box still gets a rect
- * and still reaches the model as a checkbox field; it just carries no label to
- * distinguish it, which is honest. A wrong label is worse than none.
+ * Returns null rather than a distant run: an unlabelled box still reaches the
+ * model as a checkbox field, and a wrong label is worse than none.
  */
 function labelRun(line: Line, box: GeometryRect): Run | null {
     const boxRight = box.x + box.width;
@@ -492,9 +414,8 @@ function labelRun(line: Line, box: GeometryRect): Run | null {
 /**
  * Distance from a shape to the side of the line a mark would go on.
  *
- * On an RTL line that is the RIGHT edge, because Hebrew reads right to left
- * and the checkbox precedes its text. Using the wrong edge puts every mark on
- * the far side of the page — which looks like a coordinate bug and is not one.
+ * ⚠ On an RTL line that is the RIGHT edge. Using the wrong edge puts every mark
+ * on the far side of the page, which looks like a coordinate bug and is not one.
  */
 function edgeDistance(line: Line, shape: GeometryRect): number {
     return line.dir === "rtl"
@@ -525,27 +446,21 @@ function matchLeaders(lines: Line[], leaders: GeometryRect[]): Map<Line, Geometr
     return matched;
 }
 
-/**
- * Attach each comb to the line carrying its label.
- *
- * A comb has no text of its own — it is an empty row of cells — so its label
- * is always on another line, and "nearest line above" is wrong. Section ד of
- * the fixture lays each row out as three lines: labels on top, signature text
- * in the middle, tick marks at the bottom. The nearest line above a comb is
- * therefore the SIGNATURE text, in a different column, horizontally disjoint.
- *
- * The rule that works on both layouts here: walk upward and take the first
- * line containing a run that horizontally OVERLAPS the comb. That gives
- *   page 1 — 6 cells → תאריך לידה, 9 cells → מס' הזהות   (dy 15.8)
- *   page 2 — 9 cells → מספר זהות, three times            (dy 13.9)
- * where nearest-line-above gives the wrong answer on page 2 every time.
- */
 export interface CombMatch {
     comb: CombField;
-    /** Text of the run that labels this comb, e.g. "מס' הזהות". */
+    /** Text of the run that labels this comb. */
     label: string;
 }
 
+/**
+ * Attach each comb to the line carrying its label.
+ *
+ * ⚠ A comb has no text of its own, and "nearest line above" is WRONG — a layout
+ * that puts labels, signature text and tick marks on three lines makes the
+ * nearest line above a comb the signature text, in a different column. The rule
+ * that works: walk upward and take the first line containing a run that
+ * horizontally OVERLAPS the comb. EXPLAINER §4.5.
+ */
 function matchCombs(lines: Line[], combs: CombField[]): Map<Line, CombMatch[]> {
     const matched = new Map<Line, CombMatch[]>();
 
@@ -558,8 +473,8 @@ function matchCombs(lines: Line[], combs: CombField[]): Map<Line, CombMatch[]> {
             const label = overlappingRun(line, comb);
             if (!label) continue;
 
-            // Append, never replace. Page 1's header line labels BOTH combs,
-            // and replacing here silently dropped the ID number field.
+            // ⚠ Append, never replace. One header line can label BOTH combs, and
+            // replacing here silently dropped a whole field.
             const existing = matched.get(line);
             if (existing) existing.push({ comb, label: label.text.trim() });
             else matched.set(line, [{ comb, label: label.text.trim() }]);
@@ -574,10 +489,9 @@ function matchCombs(lines: Line[], combs: CombField[]): Map<Line, CombMatch[]> {
 /**
  * The run of `line` that best overlaps `comb` horizontally, or null.
  *
- * Returning the run rather than a boolean is what makes per-field labelling
- * possible: on page 1 both combs match the same line, and only the individual
- * run distinguishes תאריך לידה from מס' הזהות. BEST overlap, not first —
- * neighbouring column labels can both clip a comb's edge.
+ * ⚠ Returns the RUN, not a boolean: when both combs match the same line, only
+ * the individual run distinguishes one column's label from the other's. BEST
+ * overlap, not first — neighbouring labels can both clip a comb's edge.
  */
 function overlappingRun(line: Line, comb: CombField): Run | null {
     const right = comb.x + comb.width;
@@ -598,14 +512,7 @@ function overlappingRun(line: Line, comb: CombField): Run | null {
     return best;
 }
 
-/**
- * Underscore, dot and dash runs printed in the TEXT, as opposed to drawn.
- *
- * ⚠ THIS HAS NEVER MATCHED ANYTHING ON ANY DOCUMENT. See §8.24 and the comment
- * on LITERAL_BLANK_PATTERNS: matching per run defeats the patterns, because a
- * leader extracts as one run per dot. Left in place because it costs nothing
- * and would fire on a form that types its blanks as a single string.
- */
+/** Underscore, dot and dash runs printed in the TEXT, as opposed to drawn. */
 function literalBlanks(line: Line): GeometryRect[] {
     const rects: GeometryRect[] = [];
 
@@ -621,10 +528,9 @@ function literalBlanks(line: Line): GeometryRect[] {
                 const perChar = run.width / run.text.length;
                 const width = match[0].length * perChar;
 
-                // A run's x is its LEFT edge regardless of script, but logical
-                // character index counts from the right in RTL. Measuring from
-                // the wrong end puts the mark on the far side of the run —
-                // the same class of error as §8.9's text-edge warning.
+                // ⚠ A run's x is its LEFT edge in either script, but a logical
+                // character index counts from the RIGHT in RTL. Measuring from the
+                // wrong end puts the mark on the far side of the run.
                 const x =
                     run.dir === "rtl"
                         ? run.x + run.width - (match.index + match[0].length) * perChar
@@ -645,21 +551,13 @@ function literalBlanks(line: Line): GeometryRect[] {
 /**
  * Does this line contain a gap wide enough to be a blank?
  *
- * Every blank on this form shows up as a whitespace run followed by a large
- * positional jump — 48 to 105pt, against sub-1pt between ordinary words. §7.1
- * proposed finding these by regex for underscore or dot runs; there are ZERO
- * of either in this document's text, on any page. The dotted leaders you can
- * see are vector strokes, which is extract-geometry.ts's business.
- *
  * The threshold is one em of the adjacent text rather than a constant, so it
- * scales with the type size instead of needing a number per document.
+ * scales with type size instead of needing a number per document.
  *
- * ⚠ ONE VERDICT PER LINE, however many gaps it finds. On W-9 line 3a the gaps
- * are the spaces between five checkbox options, so the whole option row reads
- * as one big blank. Unlike matchCheckboxes this has NOT been made run-keyed:
- * the checkbox fields on that line already carry the placement, so the extra
- * writeIn is redundant rather than wrong. Revisit if a line ever needs two
- * distinct gap-blanks placed separately.
+ * ⚠ ONE verdict per line however many gaps it finds, and deliberately NOT
+ * run-keyed: on a multi-option row the gaps are the spaces between options, and
+ * the checkbox fields there already carry the placement — so the extra writeIn
+ * is redundant rather than wrong. EXPLAINER §4.4.
  */
 function hasWideGap(line: Line): boolean {
     const runs = [...line.runs].sort((a, b) => a.x - b.x);
@@ -679,25 +577,17 @@ function hasWideGap(line: Line): boolean {
 // ---------------------------------------------------------------------------
 
 /**
- * Learn this document's offset from a text edge to its checkbox.
+ * Learn this document's offset from a text edge to its checkbox, then use it on
+ * lines where NO box was drawn — so a clause with no printed box still gets a
+ * mark exactly where a box would have been. EXPLAINER §4.3.
  *
- * Measured across the Harel fixture: 2.75, 2.44, 2.75 on the three pages —
- * stable enough that a document-wide median is meaningful. The median is used
- * rather than the mean so one mismatched box can't drag it.
+ * Median, not mean, so one mismatched box can't drag it.
  *
- * THIS IS THE POINT OF THE WHOLE CALIBRATION. It means a line the model says
- * to tick, but where no box was drawn, still gets a mark exactly where a box
- * would have been — because the document told us where that is. The
- * `התחלתי לעבוד` clause in section ב is precisely that case, and it stops
- * being a silent failure.
- *
- * ⚠ MEASURES TO EACH BOX'S OWN LABEL RUN, falling back to the line edge only
- * when a box has no label. This changed with run-keyed matching and had to
- * change in the same edit: line.minX is the leftmost point of the WHOLE line,
- * so on W-9 line 3a — five options across the page — boxes two through five
- * would each report a wildly negative offset and drag the median. While only
- * one box per line survived, the line edge and the label edge were the same
- * measurement. They are not any more.
+ * ⚠ Measures to each box's OWN LABEL RUN, falling back to the line edge only for
+ * unlabelled boxes. line.minX is the leftmost point of the WHOLE line, so on a
+ * row of five options boxes two through five would each report a wildly negative
+ * offset. While one box per line survived, the two measurements were identical —
+ * so this depends on matchCheckboxes being run-keyed.
  */
 function calibrateMarkOffset(
     pages: ExtractedPage[],
@@ -733,7 +623,7 @@ function labelOffset(line: Line, box: GeometryRect, run: Run | null): number {
     return line.dir === "rtl" ? box.x - line.maxX : line.minX - (box.x + box.width);
 }
 
-/** A mark centred on a leader line — for write-in fields with a rule drawn. */
+/** A mark centred on a leader line — for write-ins with a rule drawn. */
 function leaderMark(leader: GeometryRect | undefined, size: number): GeometryRect | null {
     if (!leader) return null;
 
@@ -746,18 +636,14 @@ function leaderMark(leader: GeometryRect | undefined, size: number): GeometryRec
 }
 
 /**
- * The rectangle a line occupies on the page.
+ * The rectangle a line occupies on the page, for the focus band.
  *
- * `line.y` is the BASELINE, not the top, so the box has to be grown upward by
- * the glyph height and downward by roughly a descender — drawing from the
- * baseline down would put a highlight under the text rather than on it.
+ * ⚠ line.y is the BASELINE, not the top, so the box grows upward — drawing from
+ * the baseline down puts a highlight under the text. Direction-agnostic:
+ * minX/maxX are extents regardless of script.
  *
- * The 9pt fallback is the same guard `isImplausibleLine` uses: some producers
- * emit zero-height whitespace items, and a zero-height highlight is invisible
- * rather than obviously wrong, which is worse.
- *
- * Direction-agnostic on purpose — minX and maxX are extents regardless of
- * script, so this needs none of the RTL branching the mark functions do.
+ * The 9pt fallback guards zero-height whitespace items, which some producers
+ * emit; a zero-height highlight is invisible rather than obviously wrong.
  */
 function lineBounds(line: Line): GeometryRect {
     const height = Math.max(...line.runs.map((r) => r.height || 9), 1);
@@ -775,22 +661,19 @@ function offsetMark(line: Line, offset: number, size: number): GeometryRect {
     const x = line.dir === "rtl" ? line.maxX + offset : line.minX - offset - size;
 
     // Baseline minus a fraction of the size, matching where drawn boxes sit
-    // relative to their text (1.2pt below the baseline on this document).
+    // relative to their text.
     return { x, y: line.y - size * 0.15, width: size, height: size };
 }
 
 /**
  * Per-cell rects for a comb.
  *
- * ⚠ INDEXED LEFT TO RIGHT, GEOMETRICALLY. On an RTL form the first character
- * the user writes belongs in the RIGHTMOST cell, so a 9-digit ID fills index 8
- * down to 0. Filling 0 upward writes the number mirrored — and it looks
- * entirely plausible on screen.
- *
- * ✅ No longer a live risk: click-to-prefill is CUT (§9.4), so nothing in the
- * codebase writes into cells programmatically. The user reads the value off
- * the marker and types it right-to-left, as a person naturally does. If
- * prefill is ever revived, this is the first thing to get right.
+ * ⚠ INDEXED LEFT TO RIGHT, GEOMETRICALLY. On an RTL form the first character the
+ * user writes belongs in the RIGHTMOST cell, so a 9-digit ID fills index 8 down
+ * to 0 — filling 0 upward writes it mirrored, and it looks entirely plausible on
+ * screen. Not currently a live risk because nothing writes into cells
+ * programmatically; if autofill is ever added, this is the first thing to get
+ * right. EXPLAINER §9.5.
  */
 function cellRects(comb: CombField): GeometryRect[] {
     return Array.from({ length: comb.cellCount }, (_, i) => ({

@@ -2,27 +2,13 @@
  * copilot/copilotStore.ts
  *
  * Provider credentials, the user's stated situation, and the copilot's two
- * results: per-field classifications (§9.3) and the follow-up question thread
- * (§9.7). Separate from annotationStore, deliberately — an AI response must
- * never mark the document dirty.
+ * results: per-field classifications and the question thread. Separate from
+ * annotationStore deliberately — an AI response must never mark the document
+ * dirty.
  *
-* ─── ⚠ WHAT MAY BE PERSISTED, AND WHAT MAY NOT ───────────────────────────
- * Persistent storage holds ONE key: { provider, apiKey }. Nothing else in
- * this file may ever be written to it. Which backend that is — chrome.storage
- * in the extension, localStorage on the web — is copilot/storage.ts's problem,
- * not this file's.
- *
- * The context answers are the most personal thing in the app (§4), and the ask
- * thread is worse — it is a transcript of someone's questions about their own
- * severance withdrawal. In memory, gone on refresh or tab close. That is the
- * privacy story, and it is only true as long as persist() keeps taking a
- * StoredCredentials and nothing wider.
- *
- * The context answers are the most personal thing in the app (§4), and the ask
- * thread is worse — it is a transcript of someone's questions about their own
- * severance withdrawal. In memory, gone on refresh or tab close. That is the
- * privacy story, and it is only true as long as persist() keeps taking a
- * StoredCredentials and nothing wider.
+ * ⚠ ONE key is persisted: { provider, apiKey }. Nothing else in this file may
+ * ever reach storage — the context answers and the ask thread are the most
+ * personal things in the app and are in-memory only. EXPLAINER §8.1.
  */
 
 import { createStore } from "zustand/vanilla";
@@ -32,6 +18,7 @@ import { askQuestion, type AskTurn } from "./ask";
 import { COPILOT_DEV } from "./dev";
 import type { PayloadLine } from "./detect-field";
 import { readStored, writeStored, removeStored } from "./storage";
+
 export type Provider = "anthropic" | "openai" | "groq";
 
 export const PROVIDERS: Array<{ id: Provider; label: string; keyLabel: string }> = [
@@ -40,7 +27,7 @@ export const PROVIDERS: Array<{ id: Provider; label: string; keyLabel: string }>
     { id: "groq", label: "Groq (free tier)", keyLabel: "Groq API key" },
 ];
 
-/** The one key chrome.storage.local is allowed to hold. */
+/** The one key persistent storage is allowed to hold. */
 const STORAGE_KEY = "copilot.credentials";
 
 interface StoredCredentials {
@@ -51,8 +38,8 @@ interface StoredCredentials {
 interface CopilotState {
     provider: Provider;
     apiKey: string;
-    /** False until chrome.storage has been read, so the UI can avoid flashing
-     *  an empty key field at a user who already has one saved. */
+    /** False until storage has been read, so the UI doesn't flash an empty key
+     *  field at a user who already has one saved. */
     credentialsLoaded: boolean;
 
     /** "What is this document?" — free text, in-memory only. */
@@ -60,27 +47,22 @@ interface CopilotState {
     /** "What do you need to do?" — free text, in-memory only. */
     goal: string;
 
+    /** ⚠ Keyed by `ref ?? id`, per FIELD. A line can carry several verdicts. */
     classifications: Map<string, FieldClassification>;
     status: "idle" | "loading" | "done" | "error";
     error: string | null;
 
     /**
-     * Completed exchanges, oldest first (§9.7).
+     * Completed exchanges, oldest first.
      *
-     * ⚠ INVARIANT: every turn has BOTH a question and an answer. ask.ts
-     * resends the tail of this array to the model as conversation history, so
-     * a turn with an empty answer would upload `A:` followed by nothing. The
-     * in-flight question lives in pendingQuestion instead, precisely so this
-     * array never holds a half-turn.
+     * ⚠ Every turn has BOTH a question and an answer. ask.ts resends the tail as
+     * history, so a half-turn would upload `A:` followed by nothing — which is
+     * why the in-flight question lives in pendingQuestion instead.
      */
     askThread: AskTurn[];
-    /** The question currently in flight, shown immediately so the UI doesn't
-     *  look frozen while the model thinks. Null when nothing is pending. */
+    /** In flight, shown immediately so the UI doesn't look frozen. */
     pendingQuestion: string | null;
-    /**
-     * No "done" state: the thread itself is the result, so there is nothing for
-     * a done flag to reveal. Idle after a successful answer.
-     */
+    /** No "done": the thread itself is the result. Idle after a good answer. */
     askStatus: "idle" | "loading" | "error";
     askError: string | null;
 
@@ -117,9 +99,8 @@ export const copilotStore = createStore<CopilotState>((set, get) => ({
     async runClassification(payload) {
         const { provider, apiKey, documentDescription, goal, status } = get();
 
-        // Guard against a double-click firing two requests. The second would
-        // resolve after the first and overwrite it, which on a slow network
-        // means the user sees results flip.
+        // Guard against a double-click firing two requests: the second resolves
+        // after the first and overwrites it, so results visibly flip.
         if (status === "loading") return;
 
         set({ status: "loading", error: null });
@@ -138,11 +119,19 @@ export const copilotStore = createStore<CopilotState>((set, get) => ({
 
         if (COPILOT_DEV) {
             const withRef = result.classifications.filter((c) => c.ref);
+
+            // ⚠ Logs the FULL array, not withRef. Printing the filtered subset
+            // beside an unfiltered count read as a silent data loss for three
+            // debugging rounds. EXPLAINER §9.6.
             console.log(
                 `[copilot] ${result.classifications.length} verdicts, ${withRef.length} with a ref:`,
                 result.classifications,
             );
         }
+
+        // ⚠ Keyed `ref ?? id`, never `id` alone. Three verdicts share one line
+        // id on a multi-field row, and keying by line silently kept the last.
+        // EXPLAINER §4.4.
         set({
             classifications: new Map(result.classifications.map((c) => [c.ref ?? c.id, c])),
             status: "done",
@@ -150,22 +139,13 @@ export const copilotStore = createStore<CopilotState>((set, get) => ({
         });
     },
 
-
     /**
-     * Ask one follow-up question (§9.7).
+     * ⚠ INDEPENDENT OF CLASSIFICATION ON PURPOSE. Reads no `status`, requires no
+     * `classifications`, and is not blocked while a classification runs — that
+     * independence is what makes it the live fallback. EXPLAINER §5.6.
      *
-     * ⚠ INDEPENDENT OF CLASSIFICATION ON PURPOSE. It does not read `status`,
-     * does not require `classifications` to be populated, and is not blocked
-     * while a classification is running. That independence is what makes it
-     * §10's network-failure fallback: if the big call fails live, this one
-     * still answers questions.
-     *
-     * ⚠ RETURNS A BOOLEAN because the panel owns the textarea's text. Local
-     * state there rather than store state here, so typing doesn't re-render
-     * the 124-row line list on every keystroke — the same cost the panel's
-     * useMemo already exists to avoid. The panel clears the box only on true;
-     * clearing it on failure would delete what the user typed at the exact
-     * moment they want to retry it.
+     * ⚠ Returns a boolean because the panel owns the textarea's text: it clears
+     * only on success, so a failed request leaves the question there to retry.
      */
     async ask(payload, question) {
         const { provider, apiKey, documentDescription, goal, askStatus, askThread } = get();
@@ -178,17 +158,13 @@ export const copilotStore = createStore<CopilotState>((set, get) => ({
             return false;
         }
 
-        // Shown immediately. The answer can be 10+ seconds away on a full
-        // Hebrew document, and a send button that visibly does nothing reads
-        // as broken.
         set({ pendingQuestion: trimmed, askStatus: "loading", askError: null });
 
         const result = await askQuestion({
             payload,
             context: { documentDescription, goal },
-            // Read from the snapshot above, not from a fresh get(). The guard
-            // means no other ask can have landed in between, and a re-read
-            // would only invite someone to remove the guard later.
+            // From the snapshot above, not a fresh get(): the guard means no
+            // other ask can have landed in between.
             history: askThread,
             question: trimmed,
             provider,
@@ -196,9 +172,8 @@ export const copilotStore = createStore<CopilotState>((set, get) => ({
         });
 
         if (!result.ok) {
-            // pendingQuestion cleared: it is a record of something in flight,
-            // and nothing is. The question survives in the panel's textarea,
-            // which is why that state lives there.
+            // pendingQuestion records something in flight, and nothing is. The
+            // question survives in the panel's textarea.
             set({ pendingQuestion: null, askStatus: "error", askError: result.error });
             return false;
         }
@@ -213,18 +188,15 @@ export const copilotStore = createStore<CopilotState>((set, get) => ({
         return true;
     },
 
+    /**
+     * Credentials and context survive a new document; results do not.
+     *
+     * ⚠ The thread is document-specific too. An answer about the old form isn't
+     * merely stale, it is wrong — and it would be resent as history, teaching
+     * the model about a document that is no longer open. Line ids are array
+     * positions and shift on every re-extraction.
+     */
     resetResults() {
-        // Credentials and context survive: the user is likely opening a second
-        // form in the same session, and re-typing their situation is the kind
-        // of friction that makes a tool feel hostile. Only results are
-        // document-specific.
-        //
-        // ⚠ THE THREAD IS DOCUMENT-SPECIFIC TOO. An answer about the Harel
-        // form's section ב is not merely stale beside a W-9, it is wrong — and
-        // it would be resent to the model as history, teaching it about a
-        // document that is no longer open. Line ids are array positions and
-        // shift on every re-extraction (§8.14), so nothing here survives a new
-        // document.
         set({
             classifications: new Map(),
             status: "idle",
@@ -246,8 +218,7 @@ export const copilotStore = createStore<CopilotState>((set, get) => ({
                 credentialsLoaded: true,
             });
         } catch {
-            // Storage being unavailable is not fatal — the user can paste a key
-            // and use the copilot for this session. Deliberately no error
+            // Not fatal — the user can paste a key for this session. No error
             // detail: a storage exception can echo the value it was handling.
             set({ credentialsLoaded: true });
         }
@@ -256,11 +227,9 @@ export const copilotStore = createStore<CopilotState>((set, get) => ({
     setProvider(provider) {
         if (provider === get().provider) return;
 
-        // Clearing the key on switch is required, not tidiness: an Anthropic
-        // key sent to OpenAI produces an auth error that reads like a broken
+        // Clearing the key on switch is required, not tidiness: an Anthropic key
+        // sent to OpenAI produces an auth error that reads like a broken
         // integration, and the user has no reason to suspect a stale field.
-        // Only one { provider, apiKey } pair is ever stored (§9.5), so there is
-        // no other key to fall back to.
         set({ provider, apiKey: "" });
         void persist({ provider, apiKey: "" });
     },
@@ -284,36 +253,29 @@ export const copilotStore = createStore<CopilotState>((set, get) => ({
         try {
             await removeStored(STORAGE_KEY);
         } catch {
-            // Nothing useful to do. The in-memory value is already gone, which
+            // Nothing useful to do — the in-memory value is already gone, which
             // is what the user asked for.
         }
     },
 }));
 
-
 /**
- * ⚠ TAKES StoredCredentials, NOT A PARTIAL STATE. That signature is the only
- * thing preventing the context answers or the ask thread from reaching disk —
- * widening it to accept arbitrary state would break §4's privacy claim in a
- * way nothing would flag.
+ * ⚠⚠ TAKES StoredCredentials, NOT A PARTIAL STATE. That signature is the only
+ * thing keeping the context answers and the ask thread off disk. Widening it
+ * breaks the privacy claim and nothing would flag it. EXPLAINER §8.1.
  */
 async function persist(credentials: StoredCredentials): Promise<void> {
     try {
         await writeStored(STORAGE_KEY, credentials);
     } catch {
         // Non-fatal: the session keeps working, the key just won't survive a
-        // reload. Silent because the alternative is an error toast on every
-        // keystroke.
+        // reload. Silent, because the alternative is a toast per keystroke.
     }
 }
 
 /**
- * React binding, mirroring useAnnotationStore. Kept in this file rather than a
- * separate one only because the store is small; split it if it grows to match
- * the state/ + viewer/ pattern.
- *
- * Note this store MAY import React, unlike state/ — nothing in the background
- * worker needs credentials, and the AI call runs in the viewer.
+ * React binding, mirroring useAnnotationStore. This store MAY import React,
+ * unlike state/ — nothing in the background worker needs credentials.
  */
 export function useCopilotStore<T>(selector: (state: CopilotState) => T): T {
     return useStore(copilotStore, selector);

@@ -1,42 +1,18 @@
 /**
  * copilot/classify.ts
  *
- * §9.3 — sends the document's text to the model and gets back a verdict per
- * field.
+ * The classification task: sends the document's text to the model and gets back
+ * a verdict per field. Owns the prompt, the payload serialisation and the
+ * validation of what comes back. Transport lives in provider.ts.
  *
- * ─── WHAT THIS FILE IS NOW ───────────────────────────────────────────────
- * The classification TASK: its prompt, how the payload is turned into a
- * message, and how the answer is validated. Talking to a provider moved to
- * provider.ts when §9.7 needed a second caller — endpoints, request shapes,
- * timeouts and error vocabulary all live there.
- *
- * §9.5's rule survives the split unchanged: no UI code contains
- * `if (provider === "openai")`. A component asks for classifications and gets
- * classifications.
- *
- * ─── ⚠ EVERY LINE GOES, NOT A FILTERED LIST OF BLANKS ────────────────────
- * The payload is all ~124 lines including headings, fine print and the address
- * block. That is the design, not laziness (§3.1). Geometry cannot find a field
- * created by a heading that says "mark the relevant options below", and the
- * fixture has nine eligibility clauses with only eight checkboxes drawn — a
- * filtered list silently loses the ninth. The W-9 proves it harder: that form
- * draws no rectangles at all, and the model still returned "fill in" for line
- * 1, which has no detectable affordance of any kind (§8.17).
- *
- * ─── ⚠ COORDINATES NEVER LEAVE — AND projectLines IS THE PROOF ───────────
- * PayloadLine carries no geometry by construction, and projectLines rebuilds
- * each line FIELD BY FIELD rather than spreading it, so a coordinate added to
- * PayloadLine later cannot silently start being uploaded.
- *
- * It is exported for ask.ts (§9.7) deliberately. A second feature writing its
- * own serialisation would create a second place a coordinate could leak, and
- * you would have to audit both forever. One function, one audit.
+ * EXPLAINER §5.1–§5.3.
  */
 
 import { callProvider, describeError } from "./provider";
 import type { PayloadLine } from "./detect-field";
 import type { Provider } from "./copilotStore";
 import { COPILOT_DEV } from "./dev";
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -47,31 +23,22 @@ export interface FieldClassification {
     /** A line id from the payload. Never invented — unknown ids are dropped. */
     id: string;
     /**
-     * WHICH field on that line, when the line carries several (§8.22).
+     * WHICH field on that line, when the line carries several.
      *
-     * Optional, and often absent. A model that ignores it produces exactly
-     * §9.3's tested behaviour — which is why this was safe to add before a
-     * demo: the five tested passes in §8.23 remain the floor, not something at
-     * risk. When it is absent and a line has several same-kind rects, the
-     * marker layer draws nothing rather than guessing.
-     *
-     * Validated against the refs of ITS OWN LINE. A ref belonging to a
-     * different line is a real ref and a wrong answer, and is stripped.
+     * Often absent, and emission is high-variance run to run — anything
+     * depending on it must degrade gracefully. Validated against the refs of
+     * ITS OWN LINE: a ref belonging to a different line is a real ref and a
+     * wrong answer. EXPLAINER §5.3.
      */
     ref?: string;
     fill: Verdict;
     /** The literal value to write, or an instruction if a value can't be known. */
     value_or_instruction: string;
-    /** Why, in the user's language. */
+    /** Why. Always English — see the prompt's CRITICAL block. */
     reason: string;
 }
 
-/**
- * Success or a readable failure — never a thrown error and never a silent
- * hang. §10 lists "visible error if key missing or invalid" as its own demo
- * checklist item because a spinner that never resolves is the worst possible
- * live failure.
- */
+/** Success or a readable failure — never a thrown error, never a silent hang. */
 export type ClassificationResult =
     | { ok: true; classifications: FieldClassification[] }
     | { ok: false; error: string };
@@ -85,24 +52,13 @@ export interface UserContext {
 // Tuning
 // ---------------------------------------------------------------------------
 
-/**
- * Past this, give up and say so. Generous because a full document is a real
- * amount of thinking — 124 lines of verdicts is not a chat reply.
- *
- * ⚠ Deliberately different from ask.ts's, which is much shorter. A user
- * watching a question box will assume 90 seconds means "broken" and reload,
- * which loses the extraction and every annotation on the page.
- */
+/** A full Hebrew page takes 60–100s to generate. EXPLAINER §5.4. */
 const CLASSIFY_TIMEOUT_MS = 180_000;
+
 /**
- * A whole document's worth of verdicts needs real room: 124 lines × a short
- * object each. A truncated response is unparseable JSON, which surfaces as
- * "the model returned something unreadable" rather than as the length problem
- * it actually is.
- *
- * A REQUEST, NOT A GUARANTEE — provider.ts clamps this down to the provider's
- * own ceiling. Groq's is 3000 (§8.18), which is why Groq cannot run the Hebrew
- * fixture at all and is for pipeline testing on Latin documents only.
+ * A REQUEST, NOT A GUARANTEE — provider.ts clamps this to the provider's own
+ * ceiling. Hebrew output costs ~1 token per character, so this is the binding
+ * constraint on how much can be classified per request. EXPLAINER §5.4.
  */
 const CLASSIFY_MAX_TOKENS = 8000;
 
@@ -111,14 +67,10 @@ const CLASSIFY_MAX_TOKENS = 8000;
 // ---------------------------------------------------------------------------
 
 /**
- * ⚠ THE LANGUAGE SEPARATION IS THE MOST IMPORTANT RULE HERE.
- *
- * The EXPLANATION goes in the user's language — they need to understand it.
- * The VALUE stays in the document's language and script. A name or address
- * written in English on a Hebrew form gets the submission rejected, because
- * the authority expects Hebrew. The model will not do this reliably unless
- * told explicitly, and the failure is invisible to a demo audience who can't
- * read Hebrew.
+ * ⚠ THE STRUCTURE IS LOAD-BEARING. The language rule sits AFTER the JSON schema
+ * under its own heading because that is what made it stick — as rule 4 of 8 it
+ * drifted on 2 of 5 rows. Do not tidy it back into the numbered list.
+ * EXPLAINER §5.2.
  */
 const SYSTEM_PROMPT = `You help a person fill in a bureaucratic form.
 
@@ -188,27 +140,16 @@ needs Hebrew values, including names and addresses, because that is what the
 receiving authority expects.
 
 Check both before you answer.`;
+
 /**
- * Turn the payload into the plain objects that get serialised and uploaded.
+ * ⚠⚠ THIS IS THE PRIVACY BOUNDARY. Everything above it may hold coordinates;
+ * nothing below it does.
  *
- * ⚠ THIS IS THE PRIVACY BOUNDARY. Everything above it may hold coordinates;
- * nothing below it does. Rebuilt field by field rather than spread for exactly
- * that reason — `{ ...line }` would upload any property added to PayloadLine
- * later, silently and forever.
+ * Rebuilt field by field rather than spread — `{ ...line }` would upload any
+ * property added to PayloadLine later, silently and forever. Cell counts and
+ * refs cross deliberately; nothing else does. EXPLAINER §5.1.
  *
- * Cell counts DO go, because they change the answer: "nine cells, one
- * character each" produces nine digits, and a six-cell date wants DDMMYY where
- * an eight-cell one wants DDMMYYYY (§3.2). The model cannot know which without
- * being told, and the text layer does not contain it.
- *
- * `ref` DOES go, added when a line carrying five checkboxes needed a way for
- * the model to say WHICH one (§8.22). It is "p1l3f0" — a line index and a
- * field index. No coordinate, and nothing derived from one: the payload
- * already states that a field was detected on that line, and the ref only
- * numbers them. The rule is unchanged — this function is the boundary, and a
- * property crosses it when someone decides it should, never by accident.
- *
- * Exported for ask.ts. Do not write a second one.
+ * Exported for ask.ts. One function, one audit — do not write a second one.
  */
 export function projectLines(payload: PayloadLine[]) {
     return payload.map((line) => ({
@@ -249,8 +190,8 @@ export async function getFieldClassifications(
     provider: Provider,
     apiKey: string,
 ): Promise<ClassificationResult> {
-    // No key check here — provider.ts rejects an empty key with the message
-    // the user needs, and duplicating it means two strings to keep in step.
+    // No key check — provider.ts rejects an empty key with the message the user
+    // needs, and duplicating it means two strings to keep in step.
     const result = await callProvider({
         system: SYSTEM_PROMPT,
         message: buildUserMessage(payload, context),
@@ -263,10 +204,9 @@ export async function getFieldClassifications(
 
     if (!result.ok) return { ok: false, error: result.error };
 
-    // ⚠ THE PARSE NEEDS ITS OWN try/catch. callProvider has already returned
-    // successfully by this point, so a malformed answer throws out of THIS
-    // function, not out of the transport. Losing this catch turns a bad reply
-    // into an unhandled rejection and the panel spins forever.
+    // ⚠ The parse needs its OWN try/catch. callProvider has already returned
+    // successfully by here, so a malformed answer throws out of THIS function,
+    // not out of the transport — and without this the panel spins forever.
     try {
         return { ok: true, classifications: parseResponse(result.text, payload) };
     } catch (error) {
@@ -279,38 +219,29 @@ export async function getFieldClassifications(
 // ---------------------------------------------------------------------------
 
 /**
- * Parse the model's JSON and discard anything that can't be trusted.
+ * Parse the model's JSON and discard what can't be trusted. Two severities:
+ * a bad id drops the row, a bad ref only strips the ref. EXPLAINER §5.3.
  *
- * ⚠ IDS ARE VALIDATED AGAINST THE PAYLOAD. A hallucinated id has no entry in
- * detect-field's geometry map, so a marker for it has nowhere to go. Dropping
- * it here means the failure is one missing row rather than an undefined rect
- * reaching the annotation layer.
- *
- * ⚠ REFS ARE VALIDATED PER LINE, NOT GLOBALLY. "p1l7f0" returned against line
- * p1l3 is a perfectly real ref and a completely wrong answer — a global
- * set-of-all-refs check would wave it through, and the mark would land on
- * another line entirely. The map below is keyed by line for that reason.
- *
- * ⚠ AN INVALID REF STRIPS THE REF, IT DOES NOT DROP THE ROW. The verdict and
- * its reason are the valuable part and are usually right even when the ref is
- * not; discarding good advice over a bad identifier is the worse trade. A
- * stripped ref degrades to exactly the pre-§8.22 behaviour.
- *
- * ⚠ IDS ARE ARRAY POSITIONS (§8.14). They shift whenever line splitting
- * changes, so a payload and its verdicts are only valid together. Never cache
- * classifications across a re-extraction.
+ * ⚠ Line ids are array positions, so a payload and its verdicts are only valid
+ * together. Never cache classifications across a re-extraction.
  */
 function parseResponse(raw: string, payload: PayloadLine[]): FieldClassification[] {
+    // ⚠ Keyed by LINE, not a global set of all refs: "p1l7f0" returned against
+    // line p1l3 is a real ref and a wrong answer, and a global check waves it
+    // through — putting the mark on another line entirely.
     const refsByLine = new Map<string, Set<string>>(
         payload.map((line) => [line.id, new Set((line.fields ?? []).map((f) => f.ref))]),
     );
 
-    // Models wrap JSON in markdown fences despite being told not to, and the
-    // instruction is not worth a retry loop. Anthropic needs this; the
-    // OpenAI-compatible providers are held to it by response_format.
+    // Models wrap JSON in fences despite being told not to, and it isn't worth
+    // a retry loop.
     const cleaned = raw.replace(/```json/gi, "").replace(/```/g, "").trim();
-    console.log(`[copilot] raw response: ${raw.length} chars`);
-    console.log("[copilot] raw:", cleaned);
+
+    if (COPILOT_DEV) {
+        console.log(`[copilot] raw response: ${raw.length} chars`);
+        console.log("[copilot] raw:", cleaned);
+    }
+
     let parsed: unknown;
     try {
         parsed = JSON.parse(cleaned);
@@ -330,8 +261,8 @@ function parseResponse(raw: string, payload: PayloadLine[]): FieldClassification
 
         const e = entry as Record<string, unknown>;
 
-        // ref is deliberately NOT checked here — see the header. It is
-        // normalised after the filter so a bad one costs the ref, not the row.
+        // ref deliberately NOT checked here — normalised after the filter, so a
+        // bad one costs the ref rather than the row.
         return (
             typeof e.id === "string" &&
             refsByLine.has(e.id) &&
@@ -343,9 +274,8 @@ function parseResponse(raw: string, payload: PayloadLine[]): FieldClassification
     });
 
     if (COPILOT_DEV && kept.length !== entries.length) {
-        // Set membership, not kept.includes() — includes() is a linear scan
-        // inside a filter, so the old version was quadratic on the exact input
-        // that triggers it (a model returning many bad rows).
+        // Set membership, not kept.includes() — includes() inside a filter is
+        // quadratic on exactly the input that triggers it.
         const keptSet = new Set<unknown>(kept);
         const dropped = entries.filter((e) => !keptSet.has(e));
 
@@ -359,11 +289,9 @@ function parseResponse(raw: string, payload: PayloadLine[]): FieldClassification
 }
 
 /**
- * Keep `ref` only when it names a field on its own line; otherwise remove it.
- *
- * Deleting rather than leaving undefined so the object shape matches what a
- * ref-less model produces — one shape downstream, and the dev warning below
- * fires on a real mismatch rather than on a key that happens to be present.
+ * Keep `ref` only when it names a field on its own line; otherwise delete it —
+ * deleted rather than undefined, so the shape matches what a ref-less model
+ * produces and downstream has one case to handle.
  */
 function normaliseRef(
     entry: FieldClassification,

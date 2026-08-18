@@ -1,54 +1,26 @@
 /**
  * copilot/extract-geometry.ts
  *
- * Finds the parts of a form that are DRAWN rather than written: checkbox
- * squares, comb fields (the rows of little cells for an ID number or a date),
- * and dashed leader lines. Returns them in PDF points, origin bottom-left —
- * the same space extract-text.ts and state/annotations.ts use.
+ * Finds the parts of a form that are DRAWN rather than written: checkbox squares,
+ * comb fields (rows of little cells for an ID or a date), and dashed leader
+ * lines. Returns PDF points, origin bottom-left.
  *
- * ─── WHAT THIS FILE IS *NOT* FOR ─────────────────────────────────────────
- * It does NOT decide what the form's fields are. That is the model's job,
- * working from the text, and it is strictly better at it: a heading that says
- * "mark the relevant options below" creates fields that no geometric rule
- * could ever find. Discovery is text-driven, always.
+ * ⚠ IT DOES NOT DECIDE WHAT THE FIELDS ARE. That is the model's job, working from
+ * the text. This answers only "given that a field exists on this line, WHERE does
+ * a mark go and HOW MUCH ROOM is there". Nothing here gates anything: if this
+ * whole file returns empty, every field still appears with the model's reasoning
+ * intact and marks just land less precisely. Preserve that. EXPLAINER §4.1.
  *
- * Geometry answers a narrower question: given that a field exists on a line,
- * WHERE exactly does a mark go, and HOW MUCH ROOM is there? So nothing here
- * gates anything. If this whole file returns empty, every field still appears
- * in the panel with the model's reasoning intact; marks just land less
- * precisely. That is the property to preserve when editing it.
+ * ⚠ NOTHING HERE THROWS, and no size is hardcoded — checkbox size and cell width
+ * are derived from the document by looking for repetition, because repeating its
+ * furniture is the one thing a form reliably does. EXPLAINER §4.2.
  *
- * The fixture proves why this matters: section ב has nine eligibility clauses
- * and only EIGHT checkboxes — the clause beginning התחלתי לעבוד במקום חדש has
- * no box drawn beside it (confirmed by rasterising, not just by this code).
- * A geometry-gated design silently drops that option. A text-driven one
- * reports it normally and notes that no box was printed.
- *
- * ─── NO HARDCODED SIZES ──────────────────────────────────────────────────
- * Checkbox size and comb cell width are DERIVED from the document by looking
- * for repetition, because that is the one thing form furniture reliably does:
- * a form repeats its checkbox twenty times and its cell width nine times in a
- * row. Nothing else on a page does that by accident. A form typeset at any
- * other scale works without retuning.
- *
- * ─── ⚠ PRIVATE, VERSION-UNSTABLE pdf.js API ──────────────────────────────
- * getOperatorList() is public; the SHAPE of what it returns is not, and it
- * changed substantially between v4 and v6:
- *   - v4 emitted separate `stroke` / `fill` ops. v6 emits NONE — the paint
- *     operation moved into constructPath's first argument.
- *   - v4 had a `rectangle` opcode carrying [x, y, w, h] directly. v6 emits
- *     rectangles as moveTo + 3×lineTo + close in a flat coordinate array.
- * Both changes yield ZERO results rather than an error. That is why nothing
- * here throws: a wrong assumption must degrade placement, never break the
- * copilot. If an upgrade turns the counts below to zero, this file is the
- * cause, and it is safe to delete while you fix it.
- *
- * VERIFIED on pdfjs-dist 6.2.108 against the Harel fixture:
- *   derived checkbox size 8.0pt from 20 occurrences
- *   page 1 — 12 checkboxes, 4 leaders, combs of 6 and 9 cells
- *   page 2 —  1 checkbox,   8 leaders, three 9-cell combs
- *   page 3 —  7 checkboxes, 0 leaders, 0 combs
- * The 6- and 9-cell counts are the point: 6 = DDMMYY, 9 = an Israeli ID.
+ * ⚠⚠ PRIVATE, VERSION-UNSTABLE pdf.js API. getOperatorList() is public; the SHAPE
+ * of what it returns is not, and it changed substantially v4 → v6. Both changes
+ * yielded ZERO results rather than an error — which is why a wrong assumption
+ * here must degrade placement, never break the copilot. If an upgrade turns the
+ * counts to zero, this file is the cause and it is safe to delete while fixing.
+ * EXPLAINER §4.7.
  */
 
 import type { PDFDocumentProxy, PDFPageProxy } from "pdfjs-dist";
@@ -69,10 +41,9 @@ export interface GeometryRect {
 /**
  * A row of equal cells — an ID number, a date, a phone number.
  *
- * cellCount is the valuable part and the reason this detector exists. "This
- * field holds nine characters, one per cell" is a different instruction to the
- * model than "write your ID here", and it is information the text layer simply
- * does not contain: text extraction sees only a wide gap.
+ * cellCount is why this detector exists: "nine characters, one per cell" is a
+ * different instruction to the model than "write your ID here", and it is
+ * information the text layer does not contain. Text extraction sees only a gap.
  */
 export interface CombField extends GeometryRect {
     cellCount: number;
@@ -91,22 +62,22 @@ export interface PageGeometry {
 export interface DocumentGeometry {
     pages: PageGeometry[];
     /**
-     * The checkbox size this document uses, in points, or null when no size
-     * repeated often enough to be confident. Null is a normal outcome, not an
-     * error — a form with two checkboxes has no mode to find.
+     * The checkbox size this document uses, or null when no size repeated often
+     * enough. ⚠ Null is a NORMAL outcome, not an error — a form with two
+     * checkboxes has no mode to find, and one whose boxes are text glyphs has no
+     * shapes at all.
      */
     checkboxSize: number | null;
-    /** False when extraction failed. Callers degrade placement; they do not fail. */
+    /** False when extraction failed. Callers degrade placement; they don't fail. */
     ok: boolean;
 }
 
 // ---------------------------------------------------------------------------
 // Tuning
 //
-// These are all SHAPE qualifiers, not size assumptions. None of them encodes
-// how big a checkbox is or how wide a cell is — those are measured. Read any
-// change to this block as a change to what counts as "square" or "thin",
-// never as retuning for a particular document.
+// ⚠ These are all SHAPE qualifiers, not size assumptions. None encodes how big a
+// checkbox is or how wide a cell is — those are measured. Read any change here as
+// a change to what counts as "square" or "thin", never as retuning for a document.
 // ---------------------------------------------------------------------------
 
 /** How far from square a checkbox may be, as a fraction of its longer side. */
@@ -116,7 +87,7 @@ const CANDIDATE_MIN_SIZE = 3;
 const CANDIDATE_MAX_SIZE = 30;
 /** A rectangle is 5 commands. A letterform is dozens. */
 const MAX_BOX_COMMANDS = 10;
-/** A size must repeat at least this often before it's believed to be the checkbox. */
+/** A size must repeat this often before it's believed to be the checkbox. */
 const MIN_CHECKBOX_REPEATS = 3;
 /** How far an individual box may sit from the derived size. */
 const CHECKBOX_SIZE_TOLERANCE = 0.75;
@@ -127,7 +98,7 @@ const TICK_MIN_HEIGHT = 3;
 const TICK_MAX_HEIGHT = 25;
 /** Ticks within this vertical distance are treated as one row. */
 const BAND_TOLERANCE = 2;
-/** Cell widths must match to within the larger of these two. */
+/** Cell widths must match to within the larger of these two. See findCombs. */
 const GAP_TOLERANCE_ABS = 0.4;
 const GAP_TOLERANCE_RATIO = 0.06;
 /** Fewer than this many equal gaps is a coincidence, not a comb. */
@@ -138,9 +109,9 @@ const LEADER_MAX_HEIGHT = 2;
 const LEADER_MIN_WIDTH = 20;
 
 /**
- * Path command codes INSIDE constructPath's coordinate array. Local to the
- * path encoding, NOT the OPS constants — OPS.moveTo is 13, but a moveTo inside
- * this array is 0. Confusing the two is the easiest mistake in this file.
+ * ⚠ Path command codes INSIDE constructPath's coordinate array. LOCAL to the path
+ * encoding, NOT the OPS constants — OPS.moveTo is 13, but a moveTo inside this
+ * array is 0. Confusing the two is the easiest mistake in this file.
  */
 const PATH_MOVE_TO = 0;
 const PATH_LINE_TO = 1;
@@ -164,17 +135,13 @@ const STROKING_PAINT_OPS = new Set<number>([
 /**
  * Extract drawn geometry for the WHOLE DOCUMENT.
  *
- * Document-level rather than page-level on purpose: the checkbox size is found
- * by repetition, and a single page may not repeat it enough to be sure. Page 2
- * of the fixture has exactly one checkbox — in isolation there is no mode to
- * find, but pooled with pages 1 and 3 the size is obvious and page 2's single
- * box is classified correctly.
+ * ⚠ Document-level, not per page: checkbox size is found by repetition, and a
+ * single page may not repeat it enough. A page with one checkbox has no mode in
+ * isolation but classifies correctly when pooled. EXPLAINER §4.2.
  *
- * NEVER THROWS. `ok: false` means "place marks by fallback offset", not
- * "give up".
- *
- * Call once at load, before the first PdfPage mounts, so nothing races
- * page.cleanup() (§6.14) — same rule as extractPageText.
+ * ⚠ NEVER THROWS. `ok: false` means "place marks by fallback offset", not "give
+ * up". Call once at load, before the first PdfPage mounts, so nothing races
+ * page.cleanup(). EXPLAINER §7.4.
  */
 export async function extractDocumentGeometry(
     doc: PDFDocumentProxy,
@@ -217,24 +184,6 @@ export async function extractDocumentGeometry(
     }
 }
 
-/**
- * The rect of one cell in a comb, for dropping a single character into it.
- *
- * Cells are indexed left to right — GEOMETRICALLY, not logically. On an RTL
- * form the first character the user writes goes in the RIGHTMOST cell, so a
- * Hebrew ID number fills index cellCount-1 downward to 0. Getting this
- * backwards writes the number mirrored, and it will look plausible enough on
- * screen that nobody notices until it is printed.
- */
-export function combCellRect(comb: CombField, index: number): GeometryRect {
-    return {
-        x: comb.x + index * comb.cellWidth,
-        y: comb.y,
-        width: comb.cellWidth,
-        height: comb.height,
-    };
-}
-
 // ---------------------------------------------------------------------------
 // Walking the operator list
 // ---------------------------------------------------------------------------
@@ -268,9 +217,9 @@ async function collectShapes(page: PDFPageProxy): Promise<Shape[]> {
         const fn = fnArray[i];
         const args = argsArray[i];
 
-        // The graphics state stack. Every shape's position depends on this
-        // being exactly right — an unbalanced restore relocates everything
-        // afterwards to somewhere plausible rather than raising an error.
+        // ⚠ The graphics state stack. Every shape's position depends on this being
+        // exactly right — an unbalanced restore relocates everything afterwards to
+        // somewhere plausible rather than raising an error.
         if (fn === OPS.save) {
             stack.push([...ctm]);
             continue;
@@ -286,9 +235,8 @@ async function collectShapes(page: PDFPageProxy): Promise<Shape[]> {
             continue;
         }
 
-        // setDash([], 0) clears the pattern, setDash([2, 2], 0) sets one. This
-        // is the only thing separating a dotted leader from a solid table rule,
-        // which are otherwise the same shape — and this form is full of rules.
+        // ⚠ The dash pattern is the ONLY thing separating a dotted leader from a
+        // solid table rule — otherwise the same shape, and forms are full of rules.
         if (fn === OPS.setDash) {
             dashed = Array.isArray(args[0]) && args[0].length > 0;
             continue;
@@ -304,17 +252,13 @@ async function collectShapes(page: PDFPageProxy): Promise<Shape[]> {
 }
 
 /**
- * Decode one constructPath call.
- *
- * v6 argument layout, none of it documented:
- *   args[0] — paint operation, an OPS constant (OPS.stroke, OPS.fill, …)
+ * Decode one constructPath call. v6 argument layout, none of it documented:
+ *   args[0] — paint operation, an OPS constant
  *   args[1] — array whose [0] is a Float32Array of interleaved commands and
- *             coordinates: [cmd, x, y, cmd, x, y, …]; curves carry six
- *             coordinates, close carries none
- *   args[2] — Float32Array bounding box [minX, minY, maxX, maxY], already
- *             computed, in path space
+ *             coordinates: [cmd, x, y, …]; curves carry six, close carries none
+ *   args[2] — Float32Array bbox [minX, minY, maxX, maxY], in path space
  *
- * args[2] is why this file is short: we never walk coordinates to find a
+ * args[2] is why this file is short: coordinates are never walked to find a
  * shape's extent, only to measure its complexity.
  */
 function readPath(args: unknown[], ctm: Matrix, dashed: boolean): Shape | null {
@@ -348,23 +292,21 @@ interface PathSummary {
 }
 
 /**
- * Count subpaths and commands. Coordinates are irrelevant here; only the
- * stride matters, and the stride depends on the command.
+ * Count subpaths and commands. Coordinates are irrelevant; only the stride
+ * matters, and the stride depends on the command.
  */
 function summarise(commands: ArrayLike<number>): PathSummary | null {
     let subpaths = 0;
     let commandCount = 0;
 
-    for (let i = 0; i < commands.length; ) {
-        // Every branch spelled out, and an unknown opcode bails.
-        //
-        // The tempting shorthand is `else i += 3` for anything that isn't a
-        // curve or a close. It is correct for both opcodes that exist today.
-        // But if pdf.js adds a third, the shorthand consumes it at the wrong
-        // stride and from there every opcode is read out of the middle of a
-        // coordinate pair — the walk completes without error and returns
-        // numbers that are simply wrong, so shapes quietly stop matching.
-        // Returning null drops one shape instead of corrupting all of them.
+    for (let i = 0; i < commands.length;) {
+        // ⚠ EVERY BRANCH SPELLED OUT, AND AN UNKNOWN OPCODE BAILS. The tempting
+        // shorthand is `else i += 3`, correct for both opcodes that exist today —
+        // but if pdf.js adds a third, that consumes it at the wrong stride and from
+        // then on every opcode is read out of the middle of a coordinate pair. The
+        // walk completes without error and returns numbers that are simply wrong,
+        // so shapes quietly stop matching. Returning null drops ONE shape instead
+        // of corrupting all of them. EXPLAINER §4.7.
         switch (commands[i]) {
             case PATH_MOVE_TO:
                 subpaths++;
@@ -400,11 +342,9 @@ function summarise(commands: ArrayLike<number>): PathSummary | null {
 /**
  * Could this shape be a checkbox at all, ignoring size?
  *
- * Complexity is what separates a box from a letterform: a checkbox is one
- * subpath of five commands, a glyph is dozens across several. Squareness is
- * proportional rather than absolute so it behaves the same at any scale — and
- * the proportional form is what removes the one false positive the previous
- * absolute version produced (a 6.0 × 8.1 rectangle on page 2).
+ * Complexity separates a box from a letterform: a checkbox is one subpath of five
+ * commands, a glyph is dozens across several. ⚠ Squareness is PROPORTIONAL so it
+ * behaves the same at any scale — the absolute version produced a false positive.
  */
 function isBoxCandidate(shape: Shape): boolean {
     if (shape.subpaths !== 1) return false;
@@ -419,22 +359,15 @@ function isBoxCandidate(shape: Shape): boolean {
 }
 
 /**
- * Find the size this document uses for checkboxes, by mode.
+ * Find the size this document uses for checkboxes, by mode. Nothing else on a
+ * page repeats a size at the same scale. Returns null when nothing repeats
+ * enough — a normal outcome the caller must handle. EXPLAINER §4.2.
  *
- * A form repeats its checkbox. Nothing else repeats a size at the same scale:
- * on the fixture, 8.0pt occurs 20 times, the runner-up 5 times, and every
- * other size exactly once.
- *
- * Returns null when nothing repeats enough — a normal outcome for a form with
- * one or two boxes, and the caller must handle it rather than treat it as an
- * error.
- *
- * NOTE: stroked and filled candidates are pooled deliberately, so a form using
- * filled boxes works without a flag. The risk is a document whose bullet
- * markers are small filled squares out-voting the real checkboxes. This
- * fixture dodges that because its ■ bullets are ZapfDingbats *text*, not
- * paths. If a document ever trips it, preferring the stroked cluster when both
- * exist is the fix — an empty checkbox is virtually always an outline.
+ * ⚠ Stroked and filled candidates are POOLED deliberately, so a form using filled
+ * boxes works without a flag. The risk is a document whose bullet markers are
+ * small filled squares out-voting the real checkboxes. If that ever trips,
+ * preferring the stroked cluster when both exist is the fix — an empty checkbox
+ * is virtually always an outline.
  */
 function deriveCheckboxSize(shapes: Shape[]): number | null {
     const histogram = new Map<number, number>();
@@ -442,8 +375,8 @@ function deriveCheckboxSize(shapes: Shape[]): number | null {
     for (const shape of shapes) {
         if (!isBoxCandidate(shape)) continue;
 
-        // Half-point buckets: fine enough to separate real sizes, coarse
-        // enough that float noise doesn't split one size across two buckets.
+        // Half-point buckets: fine enough to separate real sizes, coarse enough
+        // that float noise doesn't split one size across two buckets.
         const bucket = Math.round(shape.rect.width * 2) / 2;
         histogram.set(bucket, (histogram.get(bucket) ?? 0) + 1);
     }
@@ -452,8 +385,8 @@ function deriveCheckboxSize(shapes: Shape[]): number | null {
     let bestCount = 0;
 
     for (const [size, count] of histogram) {
-        // Ties break toward the smaller size: decorative repeated shapes tend
-        // to be larger than checkboxes, not smaller.
+        // Ties break toward the smaller size: decorative repeated shapes tend to
+        // be larger than checkboxes, not smaller.
         if (count > bestCount || (count === bestCount && bestSize !== null && size < bestSize)) {
             bestSize = size;
             bestCount = count;
@@ -477,24 +410,15 @@ function isCheckbox(shape: Shape, size: number): boolean {
 // ---------------------------------------------------------------------------
 
 /**
- * Find rows of equal cells.
+ * Find rows of equal cells: group thin vertical strokes into horizontal bands,
+ * then look for runs of three or more consecutive EQUAL gaps. Equal spacing
+ * repeated four times is not something a layout does by accident, which makes
+ * this the most specific detector here — and the cell width falls out of the data.
  *
- * The signal is evenly spaced vertical ticks: group thin vertical strokes into
- * horizontal bands, then look for runs of three or more consecutive EQUAL
- * gaps. Equal spacing repeated four times is not something a page layout does
- * by accident, which makes this the most specific detector in the file — and
- * the cell width falls out of the data rather than being configured.
- *
- * On the fixture this yields exactly the semantically right numbers: 6 cells
- * for the date of birth (DDMMYY) and 9 for the ID number, plus three more
- * 9-cell ID fields on page 2 for the parent and guardian rows.
- *
- * WHY THE TOLERANCE IS PROPORTIONAL: the ID field's first cell is genuinely
- * 0.49pt narrower than the rest (15.31 against 15.80). A flat 0.4pt tolerance
- * rejects it and reports 8 cells for a 9-digit number — an off-by-one that
- * would have the model suggest eight digits for an Israeli ID. Six percent of
- * the cell width accepts it while staying nowhere near the 100pt-plus gaps
- * that separate one field from the next.
+ * ⚠ THE TOLERANCE IS PROPORTIONAL for a measured reason: a real comb's first cell
+ * can be 0.49pt narrower than the rest (15.31 against 15.80). A flat 0.4pt
+ * tolerance rejects it and reports 8 cells for a 9-digit number — an off-by-one
+ * that would have the model suggest eight digits for a national ID.
  */
 function findCombs(shapes: Shape[]): CombField[] {
     const ticks = shapes.filter(
@@ -535,13 +459,10 @@ function findCombs(shapes: Shape[]): CombField[] {
                 });
             }
 
-            // Advance by ONE on a rejected run, not to `end`.
-            //
-            // Jumping to `end` consumes the tick that failed to match, and
-            // that tick is very often the first boundary of the NEXT comb —
-            // two fields sitting side by side share a divider. Skipping it
-            // costs the next comb its first cell, which is exactly how the ID
-            // field came out one digit short.
+            // ⚠ ADVANCE BY ONE on a rejected run, not to `end`. Jumping to `end`
+            // consumes the tick that failed to match, and that tick is very often
+            // the first boundary of the NEXT comb — two fields side by side share a
+            // divider. Skipping it costs the next comb its first cell.
             start = cellCount >= MIN_COMB_CELLS ? end : start + 1;
         }
     }
@@ -572,23 +493,17 @@ function groupIntoBands(ticks: Shape[]): Band[] {
 // ---------------------------------------------------------------------------
 
 /**
- * A dotted leader — the "................" a value gets written on. Its width
- * is the useful part: it tells you how much room the user actually has.
+ * A dotted leader — the "................" a value gets written on. Its width is
+ * the useful part: it says how much room the user actually has.
  *
- * These are dashed strokes, not text. §7.1's plan to find them by regex over
- * the text layer finds nothing: this document contains zero dot-runs, zero
- * underscore-runs and zero dash-runs in its text, on any page.
+ * These are dashed STROKES, not text — a form can contain zero dot-runs in its
+ * text layer and still show leaders on every page.
  *
- * CROSS-CHECK: page 1's four leaders sit at y = 613, 450, 181 and 139, exactly
- * the baselines where text-gap analysis independently finds blanks. Two
- * unrelated methods agreeing is the strongest evidence available that both
- * work. Where they disagree is signal for detect-blanks.ts, not noise.
- *
- * KNOWN LIMIT: a form using solid underlines instead of dashes gets nothing
- * here. Loosening to "thin, long, horizontal" would catch those and also catch
- * every table rule on the page — and this form is mostly table rules. There is
- * no adaptive trick here as clean as the ones above; dashed is right for this
- * document and wrong for some others.
+ * ⚠ KNOWN LIMIT: a form using solid underlines gets nothing here. Loosening to
+ * "thin, long, horizontal" would catch those and also every table rule on the
+ * page — and on some forms those same solid rules ARE the field boundaries.
+ * Identical geometry, opposite meaning; there is no adaptive trick as clean as
+ * the ones above. EXPLAINER §4.6.
  */
 function isLeader(shape: Shape): boolean {
     if (!shape.dashed) return false;
@@ -617,10 +532,9 @@ function multiply(m: Matrix, n: Matrix): Matrix {
 /**
  * Map a path-space bounding box into page space.
  *
- * All four corners are transformed, not two. Under a rotation or a flip the
- * "min" corner stops being the min, and the shortcut yields negative widths
- * that silently fail every size test downstream instead of announcing
- * themselves.
+ * ⚠ ALL FOUR CORNERS, not two. Under a rotation or a flip the "min" corner stops
+ * being the min, and the two-corner shortcut yields negative widths that silently
+ * fail every size test downstream instead of announcing themselves.
  */
 function transformBox(bbox: ArrayLike<number>, ctm: Matrix): GeometryRect {
     const corners: Array<[number, number]> = [
